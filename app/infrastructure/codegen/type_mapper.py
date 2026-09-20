@@ -35,3 +35,4 @@ def map_uml_type_to_java(uml_type: str) -> JavaTypeInfo:
         return TYPE_MAPPINGS[cleaned]
     # Default fallback is String
     return JavaTypeInfo("String", sample_value='"SampleText"')
+

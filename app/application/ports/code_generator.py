@@ -10,3 +10,4 @@ class CodeGeneratorPort(ABC):
         Returns the path to the generated project directory.
         """
         pass
+

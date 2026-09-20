@@ -80,3 +80,4 @@ def test_single_entity_generation_structure():
         assert '@RequestMapping("/api/clientes")' in controller_content
         assert "public ResponseEntity<Cliente> create" in controller_content
         assert "public ResponseEntity<List<Cliente>> getAll" in controller_content
+

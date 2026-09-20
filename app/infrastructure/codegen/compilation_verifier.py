@@ -79,3 +79,4 @@ class CompilationVerifier:
             )
 
         return True, "BUILD SUCCESS: Tests passed and artifact packaged successfully."
+

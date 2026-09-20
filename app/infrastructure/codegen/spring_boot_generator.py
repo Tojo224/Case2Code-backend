@@ -178,3 +178,4 @@ class SpringBootGenerator(CodeGeneratorPort):
             mvnw_dest.chmod(0o755)
         except Exception:
             pass
+

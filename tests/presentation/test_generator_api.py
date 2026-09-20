@@ -61,3 +61,4 @@ def test_generate_endpoint_empty_diagram_error(client, diagram_repo):
 def test_generate_endpoint_not_found(client):
     resp = client.post("/api/diagrams/non-existent-id/generate?verify=false")
     assert resp.status_code == 404
+

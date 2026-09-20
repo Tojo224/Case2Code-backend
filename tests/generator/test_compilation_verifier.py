@@ -71,3 +71,4 @@ def test_generated_project_mvnw_test_and_package():
     finally:
         # Cleanup
         shutil.rmtree(output_dir, ignore_errors=True)
+
