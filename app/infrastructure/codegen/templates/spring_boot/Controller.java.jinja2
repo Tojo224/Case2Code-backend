@@ -30,6 +30,15 @@ public class {{ entity.name }}Controller {
                 .orElse(ResponseEntity.notFound().build());
     }
 
+{% for rel in entity.relationships %}
+{% if not rel.is_collection and rel.jpa_annotation == "@ManyToOne" %}
+    @GetMapping("/by-{{ rel.field_name }}/{{ '{' ~ rel.field_name ~ 'Id}' }}")
+    public ResponseEntity<List<{{ entity.name }}>> getBy{{ rel.field_name[0]|upper ~ rel.field_name[1:] }}(@PathVariable {{ rel.id_type }} {{ rel.field_name }}Id) {
+        return ResponseEntity.ok(service.findBy{{ rel.field_name[0]|upper ~ rel.field_name[1:] }}Id({{ rel.field_name }}Id));
+    }
+{% endif %}
+{% endfor %}
+
     @PostMapping
     public ResponseEntity<{{ entity.name }}> create(@Valid @RequestBody {{ entity.name }} entity) {
         {{ entity.name }} created = service.create(entity);
@@ -54,4 +63,3 @@ public class {{ entity.name }}Controller {
         return ResponseEntity.notFound().build();
     }
 }
-

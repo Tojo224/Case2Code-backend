@@ -24,6 +24,14 @@ public class {{ entity.name }}Service {
         return repository.findById(id);
     }
 
+{% for rel in entity.relationships %}
+{% if not rel.is_collection and rel.jpa_annotation == "@ManyToOne" %}
+    public List<{{ entity.name }}> findBy{{ rel.field_name[0]|upper ~ rel.field_name[1:] }}Id({{ rel.id_type }} {{ rel.field_name }}Id) {
+        return repository.findBy{{ rel.field_name[0]|upper ~ rel.field_name[1:] }}Id({{ rel.field_name }}Id);
+    }
+{% endif %}
+{% endfor %}
+
     @Transactional
     public {{ entity.name }} create({{ entity.name }} entity) {
         return repository.save(entity);
@@ -34,6 +42,13 @@ public class {{ entity.name }}Service {
         return repository.findById(id).map(existing -> {
 {% for attr in entity.updatable_attributes %}
             existing.set{{ attr.name[0]|upper ~ attr.name[1:] }}(updatedEntity.get{{ attr.name[0]|upper ~ attr.name[1:] }}());
+{% endfor %}
+{% for rel in entity.relationships %}
+{% if not rel.is_collection and rel.jpa_annotation == "@ManyToOne" %}
+            if (updatedEntity.get{{ rel.field_name[0]|upper ~ rel.field_name[1:] }}() != null) {
+                existing.set{{ rel.field_name[0]|upper ~ rel.field_name[1:] }}(updatedEntity.get{{ rel.field_name[0]|upper ~ rel.field_name[1:] }}());
+            }
+{% endif %}
 {% endfor %}
             return repository.save(existing);
         });
@@ -48,4 +63,3 @@ public class {{ entity.name }}Service {
         return false;
     }
 }
-

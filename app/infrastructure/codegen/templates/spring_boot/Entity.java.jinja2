@@ -1,8 +1,12 @@
 package {{ package_name }}.domain;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import jakarta.persistence.*;
 import jakarta.validation.constraints.*;
 import lombok.*;
+
+import java.util.ArrayList;
+import java.util.List;
 
 {% if entity.imports %}
 {% for imp in entity.imports %}
@@ -17,6 +21,7 @@ import {{ imp }};
 @NoArgsConstructor
 @AllArgsConstructor
 @Builder
+@ToString
 public class {{ entity.name }} {
 
 {% for attr in entity.attributes %}
@@ -33,5 +38,45 @@ public class {{ entity.name }} {
 {% endif %}
 
 {% endfor %}
-}
+{% for rel in entity.relationships %}
+{% if rel.is_collection %}
+    {% if rel.jpa_annotation == "@OneToMany" %}
+    @OneToMany(mappedBy = "{{ rel.mapped_by }}", cascade = CascadeType.ALL)
+    {% elif rel.jpa_annotation == "@ManyToMany" %}
+    {% if rel.is_owner %}
+    @ManyToMany
+    @JoinTable(
+        name = "{{ rel.join_table }}",
+        joinColumns = @JoinColumn(name = "{{ rel.join_column }}"),
+        inverseJoinColumns = @JoinColumn(name = "{{ rel.inverse_join_column }}")
+    )
+    {% else %}
+    @ManyToMany(mappedBy = "{{ rel.mapped_by }}")
+    {% endif %}
+    {% endif %}
+    @JsonIgnoreProperties("{{ rel.opposite_field_name }}")
+    @ToString.Exclude
+    @EqualsAndHashCode.Exclude
+    @Builder.Default
+    private List<{{ rel.target_class_name }}> {{ rel.field_name }} = new ArrayList<>();
 
+{% else %}
+    {% if rel.jpa_annotation == "@ManyToOne" %}
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "{{ rel.join_column }}")
+    {% elif rel.jpa_annotation == "@OneToOne" %}
+    {% if rel.is_owner %}
+    @OneToOne(cascade = CascadeType.ALL)
+    @JoinColumn(name = "{{ rel.join_column }}")
+    {% else %}
+    @OneToOne(mappedBy = "{{ rel.mapped_by }}")
+    {% endif %}
+    {% endif %}
+    @JsonIgnoreProperties("{{ rel.opposite_field_name }}")
+    @ToString.Exclude
+    @EqualsAndHashCode.Exclude
+    private {{ rel.target_class_name }} {{ rel.field_name }};
+
+{% endif %}
+{% endfor %}
+}
