@@ -66,6 +66,7 @@ class CanonicalUmlDocument(BaseModel):
     name: str
     description: Optional[str] = None
     version: int = 1
+    owner_id: Optional[str] = None
     classes: List[UmlClass] = Field(default_factory=list)
     relationships: List[UmlRelationship] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

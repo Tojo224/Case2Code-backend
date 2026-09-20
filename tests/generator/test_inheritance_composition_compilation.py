@@ -98,3 +98,4 @@ def test_inheritance_and_composition_spring_boot_compiles():
         assert success, f"Maven compilation failed for Inheritance & Composition:\n{logs}"
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
+

@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: Optional[str] = os.getenv("GEMINI_API_KEY", None)
     GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
 
+    # Auth & JWT Configuration
+    JWT_SECRET: str = os.getenv("JWT_SECRET", "case2code-super-secret-key-change-in-prod-123456789")
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 days
+
     # CORS configuration
     CORS_ORIGINS: list[str] = [
         "http://localhost:5173",  # Vite default

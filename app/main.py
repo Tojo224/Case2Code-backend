@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.core.database import init_db
+from app.presentation.routes.auth import router as auth_router
 from app.presentation.routes.diagrams import router as diagrams_router
 from app.presentation.routes.generator import router as generator_router
 
@@ -33,6 +34,7 @@ app.add_middleware(
 )
 
 # Mount presentation routes
+app.include_router(auth_router, prefix=settings.API_V1_STR)
 app.include_router(diagrams_router, prefix=settings.API_V1_STR)
 app.include_router(generator_router, prefix=settings.API_V1_STR)
 

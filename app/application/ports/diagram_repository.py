@@ -20,6 +20,11 @@ class DiagramRepositoryPort(ABC):
         pass
 
     @abstractmethod
+    def list_for_user(self, user_id: str) -> List[CanonicalUmlDocument]:
+        """List all canonical UML documents owned by or shared with a user."""
+        pass
+
+    @abstractmethod
     def delete(self, diagram_id: str) -> bool:
         """Delete a canonical UML document by ID."""
         pass

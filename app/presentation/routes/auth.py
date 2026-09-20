@@ -1,0 +1,174 @@
+from typing import List, Optional
+from fastapi import APIRouter, Depends, Header, HTTPException, status
+from sqlalchemy.orm import Session
+
+from app.core.database import get_db
+from app.core.security import create_access_token, decode_access_token, verify_password
+from app.domain.models.user import User
+from app.infrastructure.persistence.user_repository import SqlAlchemyUserRepository
+from app.presentation.schemas.auth_schemas import AuthResponse, LoginRequest, RegisterRequest
+
+router = APIRouter(prefix="/auth", tags=["Authentication"])
+
+
+def get_user_repo(db: Session = Depends(get_db)) -> SqlAlchemyUserRepository:
+    return SqlAlchemyUserRepository(db)
+
+
+def get_current_user_optional(
+    authorization: Optional[str] = Header(None),
+    repo: SqlAlchemyUserRepository = Depends(get_user_repo),
+) -> Optional[User]:
+    if not authorization or not authorization.startswith("Bearer "):
+        return None
+    token = authorization.split(" ")[1]
+    payload = decode_access_token(token)
+    if not payload:
+        return None
+    user_id = payload.get("sub")
+    if not user_id:
+        return None
+    user_model = repo.get_by_id(user_id)
+    if not user_model:
+        return None
+    return User(
+        id=user_model.id,
+        email=user_model.email,
+        name=user_model.name,
+        avatar_color=user_model.avatar_color,
+        created_at=user_model.created_at,
+    )
+
+
+def get_current_user(
+    authorization: Optional[str] = Header(None),
+    repo: SqlAlchemyUserRepository = Depends(get_user_repo),
+) -> User:
+    user = get_current_user_optional(authorization, repo)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required. Please provide a valid Bearer token.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return user
+
+
+DEMO_USERS = [
+    {
+        "id": "usr-demo-profesor",
+        "email": "profesor@case2code.io",
+        "name": "Prof. Carlos Mendoza",
+        "password": "demo1234password",
+        "avatar_color": "#3B82F6",  # Blue
+    },
+    {
+        "id": "usr-demo-estudiante-a",
+        "email": "estudiante.a@case2code.io",
+        "name": "Ana Gómez (Estudiante A)",
+        "password": "demo1234password",
+        "avatar_color": "#10B981",  # Emerald
+    },
+    {
+        "id": "usr-demo-estudiante-b",
+        "email": "estudiante.b@case2code.io",
+        "name": "Bruno Torres (Estudiante B)",
+        "password": "demo1234password",
+        "avatar_color": "#F59E0B",  # Amber
+    },
+    {
+        "id": "usr-demo-estudiante-c",
+        "email": "estudiante.c@case2code.io",
+        "name": "Clara Rojas (Estudiante C)",
+        "password": "demo1234password",
+        "avatar_color": "#EC4899",  # Pink
+    },
+]
+
+
+def ensure_demo_users_seeded(repo: SqlAlchemyUserRepository):
+    for u in DEMO_USERS:
+        existing = repo.get_by_email(u["email"])
+        if not existing:
+            repo.create_user(
+                email=u["email"],
+                name=u["name"],
+                password=u["password"],
+                avatar_color=u["avatar_color"],
+                user_id=u["id"],
+            )
+
+
+@router.post("/register", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
+def register(
+    payload: RegisterRequest,
+    repo: SqlAlchemyUserRepository = Depends(get_user_repo),
+):
+    existing = repo.get_by_email(payload.email)
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="A user with this email already exists.",
+        )
+
+    # Assign default colors if none provided
+    color = payload.avatar_color or "#6366F1"
+    user = repo.create_user(
+        email=payload.email,
+        name=payload.name,
+        password=payload.password,
+        avatar_color=color,
+    )
+
+    token = create_access_token({"sub": user.id, "email": user.email, "name": user.name})
+    return AuthResponse(access_token=token, token_type="bearer", user=user)
+
+
+@router.post("/login", response_model=AuthResponse)
+def login(
+    payload: LoginRequest,
+    repo: SqlAlchemyUserRepository = Depends(get_user_repo),
+):
+    # Ensure demo users are present if someone logs in with a demo email
+    ensure_demo_users_seeded(repo)
+
+    user_model = repo.get_by_email(payload.email)
+    if not user_model or not verify_password(payload.password, user_model.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid email or password.",
+        )
+
+    user = User(
+        id=user_model.id,
+        email=user_model.email,
+        name=user_model.name,
+        avatar_color=user_model.avatar_color,
+        created_at=user_model.created_at,
+    )
+    token = create_access_token({"sub": user.id, "email": user.email, "name": user.name})
+    return AuthResponse(access_token=token, token_type="bearer", user=user)
+
+
+@router.get("/me", response_model=User)
+def get_me(current_user: User = Depends(get_current_user)):
+    return current_user
+
+
+@router.get("/demo-users", response_model=List[AuthResponse])
+def get_demo_users(repo: SqlAlchemyUserRepository = Depends(get_user_repo)):
+    ensure_demo_users_seeded(repo)
+    result = []
+    for u in DEMO_USERS:
+        user_model = repo.get_by_email(u["email"])
+        if user_model:
+            user = User(
+                id=user_model.id,
+                email=user_model.email,
+                name=user_model.name,
+                avatar_color=user_model.avatar_color,
+                created_at=user_model.created_at,
+            )
+            token = create_access_token({"sub": user.id, "email": user.email, "name": user.name})
+            result.append(AuthResponse(access_token=token, token_type="bearer", user=user))
+    return result
