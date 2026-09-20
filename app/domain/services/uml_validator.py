@@ -1,7 +1,7 @@
 import re
 from typing import Set
 
-from app.domain.models.canonical_uml import CanonicalUmlDocument, UmlClass, UmlRelationship
+from app.domain.models.canonical_uml import CanonicalUmlDocument, RelationshipTypeEnum, UmlClass, UmlRelationship
 from app.domain.models.commands import (
     AddAttributeCommand,
     CreateClassCommand,
@@ -89,6 +89,17 @@ class UmlValidator:
     def validate_create_relationship(cls, document: CanonicalUmlDocument, cmd: CreateRelationshipCommand) -> None:
         cls.get_class_or_fail(document, cmd.source_class_id)
         cls.get_class_or_fail(document, cmd.target_class_id)
+
+        if cmd.type == RelationshipTypeEnum.INHERITANCE:
+            if cmd.source_class_id == cmd.target_class_id:
+                raise UmlValidationError("A class cannot inherit from itself.")
+            for rel in document.relationships:
+                if (
+                    rel.type == RelationshipTypeEnum.INHERITANCE
+                    and rel.source_class_id == cmd.target_class_id
+                    and rel.target_class_id == cmd.source_class_id
+                ):
+                    raise UmlValidationError("Circular inheritance detected between these classes.")
 
         # Check for duplicate identical relationship
         for rel in document.relationships:

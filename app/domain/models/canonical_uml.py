@@ -19,6 +19,8 @@ class RelationshipTypeEnum(str, Enum):
     INHERITANCE = "INHERITANCE"
     AGGREGATION = "AGGREGATION"
     COMPOSITION = "COMPOSITION"
+    REALIZATION = "REALIZATION"
+    DEPENDENCY = "DEPENDENCY"
 
 
 class Position(BaseModel):
@@ -55,6 +57,8 @@ class UmlRelationship(BaseModel):
     target_cardinality: str = "1"
     source_role: Optional[str] = None
     target_role: Optional[str] = None
+    source_handle: Optional[str] = None
+    target_handle: Optional[str] = None
 
 
 class CanonicalUmlDocument(BaseModel):

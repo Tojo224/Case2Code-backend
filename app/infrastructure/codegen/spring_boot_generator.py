@@ -3,7 +3,7 @@ import os
 import re
 import shutil
 from pathlib import Path
-from typing import Any, Dict, List, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from jinja2 import Environment, FileSystemLoader
 
@@ -11,6 +11,7 @@ from app.application.ports.code_generator import CodeGeneratorPort
 from app.domain.models.canonical_uml import (
     CanonicalUmlDocument,
     RelationshipTypeEnum,
+    UmlAttribute,
     UmlClass,
     UmlRelationship,
 )
@@ -143,7 +144,7 @@ class SpringBootGenerator(CodeGeneratorPort):
         (src_test_java / "ApplicationTests.java").write_text(app_tests_template.render(root_context), encoding="utf-8")
 
         # Resolve relationships across classes
-        relationships_by_class = self._resolve_relationships(document)
+        relationships_by_class, inheritance_map, parent_classes, interfaces_map = self._resolve_relationships(document)
 
         # Render each Entity & its layers
         entity_template = self.jinja_env.get_template("Entity.java.jinja2")
@@ -156,7 +157,33 @@ class SpringBootGenerator(CodeGeneratorPort):
         all_entities = []
         for uml_class in document.classes:
             class_rels = relationships_by_class.get(uml_class.id, [])
-            entity_data = self._build_entity_context(uml_class, class_rels)
+            super_class = inheritance_map.get(uml_class.id)
+            is_parent = uml_class.id in parent_classes
+            interfaces = interfaces_map.get(uml_class.id, [])
+
+            # Collect inherited attributes from parent hierarchy
+            inherited_attrs: List[UmlAttribute] = []
+            curr_parent_name = super_class
+            visited_parents = set()
+            while curr_parent_name and curr_parent_name not in visited_parents:
+                visited_parents.add(curr_parent_name)
+                parent_cls = next((c for c in document.classes if c.name == curr_parent_name), None)
+                if parent_cls:
+                    for a in parent_cls.attributes:
+                        if not a.primary_key:
+                            inherited_attrs.append(a)
+                    curr_parent_name = inheritance_map.get(parent_cls.id)
+                else:
+                    break
+
+            entity_data = self._build_entity_context(
+                uml_class,
+                class_rels,
+                super_class=super_class,
+                is_parent_class=is_parent,
+                interfaces=interfaces,
+                inherited_attributes=inherited_attrs,
+            )
             all_entities.append(entity_data)
             ctx = {
                 "package_name": package_name,
@@ -202,6 +229,12 @@ class SpringBootGenerator(CodeGeneratorPort):
         rel_test_template = self.jinja_env.get_template("RelationshipIntegrationTest.java.jinja2")
         class_by_id = {c.id: c for c in document.classes}
         for rel in document.relationships:
+            if rel.type in [
+                RelationshipTypeEnum.INHERITANCE,
+                RelationshipTypeEnum.REALIZATION,
+                RelationshipTypeEnum.DEPENDENCY,
+            ]:
+                continue
             src = class_by_id.get(rel.source_class_id)
             tgt = class_by_id.get(rel.target_class_id)
             if src and tgt:
@@ -231,9 +264,14 @@ class SpringBootGenerator(CodeGeneratorPort):
 
         return output_dir
 
-    def _resolve_relationships(self, document: CanonicalUmlDocument) -> Dict[str, List[Dict[str, Any]]]:
+    def _resolve_relationships(
+        self, document: CanonicalUmlDocument
+    ) -> Tuple[Dict[str, List[Dict[str, Any]]], Dict[str, str], Set[str], Dict[str, List[str]]]:
         class_by_id = {c.id: c for c in document.classes}
         rel_map: Dict[str, List[Dict[str, Any]]] = {c.id: [] for c in document.classes}
+        inheritance_map: Dict[str, str] = {}
+        parent_classes: Set[str] = set()
+        interfaces_map: Dict[str, List[str]] = {c.id: [] for c in document.classes}
 
         for rel in document.relationships:
             src = class_by_id.get(rel.source_class_id)
@@ -246,7 +284,90 @@ class SpringBootGenerator(CodeGeneratorPort):
             src_id_type = next((map_uml_type_to_java(a.type).java_type for a in src.attributes if a.primary_key), "Long")
             tgt_id_type = next((map_uml_type_to_java(a.type).java_type for a in tgt.attributes if a.primary_key), "Long")
 
-            if rel.type == RelationshipTypeEnum.ONE_TO_MANY:
+            if rel.type == RelationshipTypeEnum.INHERITANCE:
+                # In UML: src is Child (Subclass) extending tgt (Superclass)
+                inheritance_map[src.id] = tgt.name
+                parent_classes.add(tgt.id)
+
+            elif rel.type == RelationshipTypeEnum.REALIZATION:
+                # In UML: src implements tgt interface
+                interfaces_map[src.id].append(tgt.name)
+
+            elif rel.type == RelationshipTypeEnum.DEPENDENCY:
+                # Documented dependency
+                pass
+
+            elif rel.type == RelationshipTypeEnum.COMPOSITION:
+                # Strong whole-part with cascade delete and orphan removal
+                field_src = rel.source_role or to_plural(tgt_name)
+                field_tgt = rel.target_role or to_snake_case(src_name)
+                is_to_one = rel.target_cardinality == "1"
+
+                if is_to_one:
+                    rel_map[src.id].append({
+                        "field_name": field_src,
+                        "target_class_name": tgt_name,
+                        "jpa_annotation": "@OneToOne",
+                        "join_column": f"{to_snake_case(field_src)}_id",
+                        "is_owner": True,
+                        "is_collection": False,
+                        "is_composition": True,
+                        "opposite_field_name": field_tgt,
+                    })
+                    rel_map[tgt.id].append({
+                        "field_name": field_tgt,
+                        "target_class_name": src_name,
+                        "jpa_annotation": "@OneToOne",
+                        "mapped_by": field_src,
+                        "is_owner": False,
+                        "is_collection": False,
+                        "opposite_field_name": field_src,
+                    })
+                else:
+                    rel_map[src.id].append({
+                        "field_name": field_src,
+                        "target_class_name": tgt_name,
+                        "jpa_annotation": "@OneToMany",
+                        "mapped_by": field_tgt,
+                        "is_collection": True,
+                        "is_composition": True,
+                        "opposite_field_name": field_tgt,
+                    })
+                    rel_map[tgt.id].append({
+                        "field_name": field_tgt,
+                        "target_class_name": src_name,
+                        "jpa_annotation": "@ManyToOne",
+                        "join_column": f"{to_snake_case(field_tgt)}_id",
+                        "is_collection": False,
+                        "opposite_field_name": field_src,
+                        "id_type": src_id_type,
+                    })
+
+            elif rel.type == RelationshipTypeEnum.AGGREGATION:
+                # Shared whole-part without cascade delete
+                field_src = rel.source_role or to_plural(tgt_name)
+                field_tgt = rel.target_role or to_snake_case(src_name)
+
+                rel_map[src.id].append({
+                    "field_name": field_src,
+                    "target_class_name": tgt_name,
+                    "jpa_annotation": "@OneToMany",
+                    "mapped_by": field_tgt,
+                    "is_collection": True,
+                    "is_aggregation": True,
+                    "opposite_field_name": field_tgt,
+                })
+                rel_map[tgt.id].append({
+                    "field_name": field_tgt,
+                    "target_class_name": src_name,
+                    "jpa_annotation": "@ManyToOne",
+                    "join_column": f"{to_snake_case(field_tgt)}_id",
+                    "is_collection": False,
+                    "opposite_field_name": field_src,
+                    "id_type": src_id_type,
+                })
+
+            elif rel.type == RelationshipTypeEnum.ONE_TO_MANY:
                 # Source (Parent) has collection of Target
                 field_src = rel.source_role or to_plural(tgt_name)
                 field_tgt = rel.target_role or to_snake_case(src_name)
@@ -341,7 +462,7 @@ class SpringBootGenerator(CodeGeneratorPort):
                     "opposite_field_name": field_src,
                 })
 
-        return rel_map
+        return rel_map, inheritance_map, parent_classes, interfaces_map
 
     def _build_relationship_test_context(
         self,
@@ -374,11 +495,35 @@ class SpringBootGenerator(CodeGeneratorPort):
             "target_to_source_getter": getter_name,
         }
 
-    def _build_entity_context(self, uml_class: UmlClass, relationships: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def _build_entity_context(
+        self,
+        uml_class: UmlClass,
+        relationships: List[Dict[str, Any]],
+        super_class: Optional[str] = None,
+        is_parent_class: bool = False,
+        interfaces: Optional[List[str]] = None,
+        inherited_attributes: Optional[List[UmlAttribute]] = None,
+    ) -> Dict[str, Any]:
         imports: Set[str] = set()
         attributes_list: List[Dict[str, Any]] = []
         updatable_attributes: List[Dict[str, Any]] = []
         id_type = "Long"
+
+        # If inherited attributes exist, add their sample definitions to updatable_attributes
+        if inherited_attributes:
+            for attr in inherited_attributes:
+                type_info = map_uml_type_to_java(attr.type)
+                if type_info.import_stmt:
+                    imports.add(type_info.import_stmt)
+                attr_dict = {
+                    "name": attr.name,
+                    "java_type": type_info.java_type,
+                    "column_name": to_snake_case(attr.name),
+                    "primary_key": False,
+                    "nullable": attr.nullable,
+                    "sample_value": type_info.sample_value,
+                }
+                updatable_attributes.append(attr_dict)
 
         for attr in uml_class.attributes:
             type_info = map_uml_type_to_java(attr.type)
@@ -409,6 +554,9 @@ class SpringBootGenerator(CodeGeneratorPort):
             "attributes": attributes_list,
             "updatable_attributes": updatable_attributes,
             "relationships": relationships,
+            "super_class": super_class,
+            "is_parent_class": is_parent_class,
+            "interfaces": interfaces or [],
         }
 
     def _copy_maven_wrapper(self, output_dir: Path) -> None:

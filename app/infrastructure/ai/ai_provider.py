@@ -76,7 +76,7 @@ Allowed Command Types and schemas:
 6. DELETE_ATTRIBUTE:
    {{"command_type": "DELETE_ATTRIBUTE", "class_id": "cls-id-or-name", "attribute_id": "attr-id-or-name"}}
 7. CREATE_RELATIONSHIP:
-   {{"command_type": "CREATE_RELATIONSHIP", "relationship_id": "rel-uuid", "type": "ONE_TO_MANY|MANY_TO_ONE|ONE_TO_ONE|MANY_TO_MANY", "source_class_id": "cls-source-id-or-name", "target_class_id": "cls-target-id-or-name", "source_cardinality": "1", "target_cardinality": "*"}}
+   {{"command_type": "CREATE_RELATIONSHIP", "relationship_id": "rel-uuid", "type": "ONE_TO_MANY|MANY_TO_ONE|ONE_TO_ONE|MANY_TO_MANY|INHERITANCE|AGGREGATION|COMPOSITION|REALIZATION|DEPENDENCY", "source_class_id": "cls-source-id-or-name", "target_class_id": "cls-target-id-or-name", "source_cardinality": "1", "target_cardinality": "*"}}
 8. DELETE_RELATIONSHIP:
    {{"command_type": "DELETE_RELATIONSHIP", "relationship_id": "rel-id"}}
 
@@ -327,7 +327,114 @@ class RuleBasedAiProvider(AiProviderPort):
             })
             return commands
 
-        # 7. CREATE RELATIONSHIP:
+        # 7. INHERITANCE:
+        # e.g. "Cliente hereda de Persona" / "Gerente extends Empleado" / "Crea herencia de Perro a Animal"
+        inh_match = re.search(
+            r"(?:(?:crea(?:r)?\s+(?:una\s+)?herencia\s+(?:de\s+)?([A-Za-z0-9_]+)\s+(?:a|hacia|con)\s+([A-Za-z0-9_]+))|([A-Za-z0-9_]+)\s+(?:hereda\s+de|extiende\s+a|extiende\s+de|extends)\s+([A-Za-z0-9_]+))",
+            normalized_prompt,
+            re.IGNORECASE,
+        )
+        if inh_match:
+            child_name = inh_match.group(1) or inh_match.group(3)
+            parent_name = inh_match.group(2) or inh_match.group(4)
+            child_name = child_name.strip()
+            parent_name = parent_name.strip()
+
+            c_cls = self._find_class_by_name(current_uml, child_name)
+            p_cls = self._find_class_by_name(current_uml, parent_name)
+            c_ref = c_cls.id if c_cls else child_name
+            p_ref = p_cls.id if p_cls else parent_name
+
+            commands.append({
+                "command_type": CommandTypeEnum.CREATE_RELATIONSHIP.value,
+                "relationship_id": f"rel-{uuid.uuid4().hex[:8]}",
+                "type": RelationshipTypeEnum.INHERITANCE.value,
+                "source_class_id": c_ref,
+                "target_class_id": p_ref,
+                "source_cardinality": "",
+                "target_cardinality": "",
+            })
+            return commands
+
+        # 8. COMPOSITION:
+        # e.g. "Crea composicion entre Pedido y DetallePedido" / "Factura compone DetalleFactura"
+        comp_match = re.search(
+            r"(?:(?:crea(?:r)?\s+(?:una\s+)?composici[oó]n\s+(?:entre\s+)?([A-Za-z0-9_]+)\s+(?:con|y)\s+([A-Za-z0-9_]+))|([A-Za-z0-9_]+)\s+compone\s+(?:a\s+)?([A-Za-z0-9_]+))",
+            normalized_prompt,
+            re.IGNORECASE,
+        )
+        if comp_match:
+            src_name = (comp_match.group(1) or comp_match.group(3)).strip()
+            tgt_name = (comp_match.group(2) or comp_match.group(4)).strip()
+            src_cls = self._find_class_by_name(current_uml, src_name)
+            tgt_cls = self._find_class_by_name(current_uml, tgt_name)
+            src_ref = src_cls.id if src_cls else src_name
+            tgt_ref = tgt_cls.id if tgt_cls else tgt_name
+
+            commands.append({
+                "command_type": CommandTypeEnum.CREATE_RELATIONSHIP.value,
+                "relationship_id": f"rel-{uuid.uuid4().hex[:8]}",
+                "type": RelationshipTypeEnum.COMPOSITION.value,
+                "source_class_id": src_ref,
+                "target_class_id": tgt_ref,
+                "source_cardinality": "1",
+                "target_cardinality": "*",
+            })
+            return commands
+
+        # 9. AGGREGATION:
+        # e.g. "Crea agregacion entre Departamento y Empleado" / "Empresa agrega Empleado"
+        agg_match = re.search(
+            r"(?:(?:crea(?:r)?\s+(?:una\s+)?agregaci[oó]n\s+(?:entre\s+)?([A-Za-z0-9_]+)\s+(?:con|y)\s+([A-Za-z0-9_]+))|([A-Za-z0-9_]+)\s+agrega\s+(?:a\s+)?([A-Za-z0-9_]+))",
+            normalized_prompt,
+            re.IGNORECASE,
+        )
+        if agg_match:
+            src_name = (agg_match.group(1) or agg_match.group(3)).strip()
+            tgt_name = (agg_match.group(2) or agg_match.group(4)).strip()
+            src_cls = self._find_class_by_name(current_uml, src_name)
+            tgt_cls = self._find_class_by_name(current_uml, tgt_name)
+            src_ref = src_cls.id if src_cls else src_name
+            tgt_ref = tgt_cls.id if tgt_cls else tgt_name
+
+            commands.append({
+                "command_type": CommandTypeEnum.CREATE_RELATIONSHIP.value,
+                "relationship_id": f"rel-{uuid.uuid4().hex[:8]}",
+                "type": RelationshipTypeEnum.AGGREGATION.value,
+                "source_class_id": src_ref,
+                "target_class_id": tgt_ref,
+                "source_cardinality": "1",
+                "target_cardinality": "*",
+            })
+            return commands
+
+        # 10. REALIZATION / IMPLEMENTS:
+        # e.g. "NotificadorEmail implementa Notificador"
+        real_match = re.search(
+            r"(?:(?:crea(?:r)?\s+(?:una\s+)?realizaci[oó]n\s+(?:entre\s+)?([A-Za-z0-9_]+)\s+(?:con|y)\s+([A-Za-z0-9_]+))|([A-Za-z0-9_]+)\s+(?:implementa(?:\s+a)?|implements)\s+([A-Za-z0-9_]+))",
+            normalized_prompt,
+            re.IGNORECASE,
+        )
+        if real_match:
+            src_name = (real_match.group(1) or real_match.group(3)).strip()
+            tgt_name = (real_match.group(2) or real_match.group(4)).strip()
+            src_cls = self._find_class_by_name(current_uml, src_name)
+            tgt_cls = self._find_class_by_name(current_uml, tgt_name)
+            src_ref = src_cls.id if src_cls else src_name
+            tgt_ref = tgt_cls.id if tgt_cls else tgt_name
+
+            commands.append({
+                "command_type": CommandTypeEnum.CREATE_RELATIONSHIP.value,
+                "relationship_id": f"rel-{uuid.uuid4().hex[:8]}",
+                "type": RelationshipTypeEnum.REALIZATION.value,
+                "source_class_id": src_ref,
+                "target_class_id": tgt_ref,
+                "source_cardinality": "",
+                "target_cardinality": "",
+            })
+            return commands
+
+        # 11. GENERAL ASSOCIATIONS:
         # e.g. "Relaciona Cliente con Reserva de uno a muchos" / "Relaciona Pedido con Cliente 1 a N"
         rel_match = re.search(
             r"(?:relaciona(?:r)?|crea(?:r)?\s+(?:una\s+)?relaci[oó]n\s+(?:entre\s+)?|conecta(?:r)?|relate|connect)\s+([A-Za-z0-9_]+)\s+(?:con|y|to|and)\s+([A-Za-z0-9_]+)(?:\s+(?:de\s+)?(uno\s+a\s+muchos|muchos\s+a\s+uno|uno\s+a\s+uno|muchos\s+a\s+muchos|1\s*:\s*[Nn*]|1\s+a\s+[Nn*]|[Nn*]\s*:\s*1|[Nn*]\s+a\s+1|1\s*:\s*1|1\s+a\s+1|[Nn*]\s*:\s*[Nn*]|[Nn*]\s+a\s+[Nn*]|one\s+to\s+many|many\s+to\s+one|one\s+to\s+one|many\s+to\s+many))?",

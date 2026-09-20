@@ -93,6 +93,8 @@ class CreateRelationshipCommand(BaseUmlCommand):
     target_cardinality: str = "1"
     source_role: Optional[str] = None
     target_role: Optional[str] = None
+    source_handle: Optional[str] = None
+    target_handle: Optional[str] = None
 
 
 class UpdateRelationshipCommand(BaseUmlCommand):
@@ -104,6 +106,8 @@ class UpdateRelationshipCommand(BaseUmlCommand):
     target_cardinality: Optional[str] = None
     source_role: Optional[str] = None
     target_role: Optional[str] = None
+    source_handle: Optional[str] = None
+    target_handle: Optional[str] = None
 
 
 class DeleteRelationshipCommand(BaseUmlCommand):

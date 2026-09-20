@@ -4,6 +4,9 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import jakarta.persistence.*;
 import jakarta.validation.constraints.*;
 import lombok.*;
+{% if entity.is_parent_class or entity.super_class %}
+import lombok.experimental.SuperBuilder;
+{% endif %}
 
 import java.util.ArrayList;
 import java.util.List;
@@ -16,20 +19,27 @@ import {{ imp }};
 
 @Entity
 @Table(name = "{{ entity.table_name }}")
+{% if entity.is_parent_class %}
+@Inheritance(strategy = InheritanceType.JOINED)
+{% endif %}
 @Getter
 @Setter
 @NoArgsConstructor
 @AllArgsConstructor
+{% if entity.is_parent_class or entity.super_class %}
+@SuperBuilder
+{% else %}
 @Builder
+{% endif %}
 @ToString
-public class {{ entity.name }} {
+public class {{ entity.name }}{% if entity.super_class %} extends {{ entity.super_class }}{% endif %}{% if entity.interfaces %} implements {{ entity.interfaces | join(', ') }}{% endif %} {
 
 {% for attr in entity.attributes %}
-{% if attr.primary_key %}
+{% if attr.primary_key and not entity.super_class %}
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private {{ attr.java_type }} {{ attr.name }};
-{% else %}
+{% elif not attr.primary_key %}
     {% if not attr.nullable %}
     @NotNull
     {% endif %}
@@ -41,7 +51,13 @@ public class {{ entity.name }} {
 {% for rel in entity.relationships %}
 {% if rel.is_collection %}
     {% if rel.jpa_annotation == "@OneToMany" %}
+    {% if rel.is_composition %}
+    @OneToMany(mappedBy = "{{ rel.mapped_by }}", cascade = CascadeType.ALL, orphanRemoval = true)
+    {% elif rel.is_aggregation %}
+    @OneToMany(mappedBy = "{{ rel.mapped_by }}", cascade = {CascadeType.PERSIST, CascadeType.MERGE})
+    {% else %}
     @OneToMany(mappedBy = "{{ rel.mapped_by }}", cascade = CascadeType.ALL)
+    {% endif %}
     {% elif rel.jpa_annotation == "@ManyToMany" %}
     {% if rel.is_owner %}
     @ManyToMany
@@ -66,7 +82,11 @@ public class {{ entity.name }} {
     @JoinColumn(name = "{{ rel.join_column }}")
     {% elif rel.jpa_annotation == "@OneToOne" %}
     {% if rel.is_owner %}
+    {% if rel.is_composition %}
+    @OneToOne(cascade = CascadeType.ALL, orphanRemoval = true)
+    {% else %}
     @OneToOne(cascade = CascadeType.ALL)
+    {% endif %}
     @JoinColumn(name = "{{ rel.join_column }}")
     {% else %}
     @OneToOne(mappedBy = "{{ rel.mapped_by }}")

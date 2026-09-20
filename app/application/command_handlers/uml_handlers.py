@@ -168,6 +168,8 @@ def handle_create_relationship(document: CanonicalUmlDocument, cmd: CreateRelati
         target_cardinality=cmd.target_cardinality,
         source_role=cmd.source_role,
         target_role=cmd.target_role,
+        source_handle=cmd.source_handle,
+        target_handle=cmd.target_handle,
     )
     document.relationships.append(new_rel)
     _touch_document(document)
@@ -188,6 +190,10 @@ def handle_update_relationship(document: CanonicalUmlDocument, cmd: UpdateRelati
         rel.source_role = cmd.source_role
     if cmd.target_role is not None:
         rel.target_role = cmd.target_role
+    if cmd.source_handle is not None:
+        rel.source_handle = cmd.source_handle
+    if cmd.target_handle is not None:
+        rel.target_handle = cmd.target_handle
 
     _touch_document(document)
     return document
