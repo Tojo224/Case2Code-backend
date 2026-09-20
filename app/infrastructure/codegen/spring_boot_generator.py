@@ -61,6 +61,10 @@ class SpringBootGenerator(CodeGeneratorPort):
             src_main_java / "controller",
             src_main_java / "config",
             src_main_java / "exception",
+            src_main_java / "assistant" / "model",
+            src_main_java / "assistant" / "handler",
+            src_main_java / "assistant" / "interpreter",
+            src_main_java / "assistant" / "controller",
             src_main_resources,
             src_test_java,
             src_test_resources,
@@ -101,6 +105,31 @@ class SpringBootGenerator(CodeGeneratorPort):
         global_handler_template = self.jinja_env.get_template("GlobalExceptionHandler.java.jinja2")
         (src_main_java / "exception" / "GlobalExceptionHandler.java").write_text(global_handler_template.render(root_context), encoding="utf-8")
 
+        # Render assistant core classes
+        action_template = self.jinja_env.get_template("BusinessAction.java.jinja2")
+        (src_main_java / "assistant" / "model" / "BusinessAction.java").write_text(action_template.render(root_context), encoding="utf-8")
+
+        cmd_template = self.jinja_env.get_template("BusinessCommand.java.jinja2")
+        (src_main_java / "assistant" / "model" / "BusinessCommand.java").write_text(cmd_template.render(root_context), encoding="utf-8")
+
+        req_template = self.jinja_env.get_template("AssistantRequest.java.jinja2")
+        (src_main_java / "assistant" / "model" / "AssistantRequest.java").write_text(req_template.render(root_context), encoding="utf-8")
+
+        resp_template = self.jinja_env.get_template("AssistantResponse.java.jinja2")
+        (src_main_java / "assistant" / "model" / "AssistantResponse.java").write_text(resp_template.render(root_context), encoding="utf-8")
+
+        handler_interface_template = self.jinja_env.get_template("EntityOperationHandler.java.jinja2")
+        (src_main_java / "assistant" / "handler" / "EntityOperationHandler.java").write_text(handler_interface_template.render(root_context), encoding="utf-8")
+
+        registry_template = self.jinja_env.get_template("OperationRegistry.java.jinja2")
+        (src_main_java / "assistant" / "handler" / "OperationRegistry.java").write_text(registry_template.render(root_context), encoding="utf-8")
+
+        interpreter_template = self.jinja_env.get_template("BusinessCommandInterpreter.java.jinja2")
+        (src_main_java / "assistant" / "interpreter" / "BusinessCommandInterpreter.java").write_text(interpreter_template.render(root_context), encoding="utf-8")
+
+        asst_ctrl_template = self.jinja_env.get_template("AssistantController.java.jinja2")
+        (src_main_java / "assistant" / "controller" / "AssistantController.java").write_text(asst_ctrl_template.render(root_context), encoding="utf-8")
+
         # Render application.properties
         app_props_template = self.jinja_env.get_template("application.properties.jinja2")
         (src_main_resources / "application.properties").write_text(app_props_template.render(root_context), encoding="utf-8")
@@ -122,6 +151,7 @@ class SpringBootGenerator(CodeGeneratorPort):
         service_template = self.jinja_env.get_template("Service.java.jinja2")
         controller_template = self.jinja_env.get_template("Controller.java.jinja2")
         int_test_template = self.jinja_env.get_template("EntityIntegrationTest.java.jinja2")
+        entity_handler_template = self.jinja_env.get_template("EntityOperationHandlerImpl.java.jinja2")
 
         all_entities = []
         for uml_class in document.classes:
@@ -149,10 +179,24 @@ class SpringBootGenerator(CodeGeneratorPort):
             (src_main_java / "controller" / f"{uml_class.name}Controller.java").write_text(
                 controller_template.render(ctx), encoding="utf-8"
             )
+            # Write EntityOperationHandler.java
+            (src_main_java / "assistant" / "handler" / f"{uml_class.name}OperationHandler.java").write_text(
+                entity_handler_template.render(ctx), encoding="utf-8"
+            )
             # Write EntityIntegrationTest.java
             (src_test_java / f"{uml_class.name}IntegrationTest.java").write_text(
                 int_test_template.render(ctx), encoding="utf-8"
             )
+
+        # Render Assistant Integration Test
+        asst_test_template = self.jinja_env.get_template("AssistantIntegrationTest.java.jinja2")
+        asst_test_ctx = {
+            "package_name": package_name,
+            "first_entity": all_entities[0] if all_entities else None,
+        }
+        (src_test_java / "AssistantIntegrationTest.java").write_text(
+            asst_test_template.render(asst_test_ctx), encoding="utf-8"
+        )
 
         # Render Relationship Integration Tests
         rel_test_template = self.jinja_env.get_template("RelationshipIntegrationTest.java.jinja2")

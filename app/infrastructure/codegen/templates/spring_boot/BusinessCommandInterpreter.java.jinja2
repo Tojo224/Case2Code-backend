@@ -1,0 +1,254 @@
+package {{ package_name }}.assistant.interpreter;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import {{ package_name }}.assistant.model.BusinessAction;
+import {{ package_name }}.assistant.model.BusinessCommand;
+import jakarta.annotation.PostConstruct;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.io.Resource;
+import org.springframework.core.io.ResourceLoader;
+import org.springframework.stereotype.Component;
+
+import java.io.InputStream;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.time.Duration;
+import java.time.LocalDate;
+import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+@Slf4j
+@Component
+@RequiredArgsConstructor
+public class BusinessCommandInterpreter {
+
+    private final ObjectMapper objectMapper;
+    private final ResourceLoader resourceLoader;
+
+    @Value("${gemini.api-key:}")
+    private String geminiApiKey;
+
+    private JsonNode schemaNode;
+    private final List<String> entityNames = new ArrayList<>();
+    private final Map<String, List<String>> entityFields = new HashMap<>();
+
+    @PostConstruct
+    public void init() {
+        try {
+            Resource resource = resourceLoader.getResource("classpath:app-schema.json");
+            if (resource.exists()) {
+                try (InputStream is = resource.getInputStream()) {
+                    schemaNode = objectMapper.readTree(is);
+                    JsonNode entities = schemaNode.get("entities");
+                    if (entities != null && entities.isArray()) {
+                        for (JsonNode ent : entities) {
+                            String name = ent.get("name").asText();
+                            entityNames.add(name);
+                            List<String> fields = new ArrayList<>();
+                            JsonNode fArray = ent.get("fields");
+                            if (fArray != null && fArray.isArray()) {
+                                for (JsonNode f : fArray) {
+                                    fields.add(f.get("name").asText());
+                                }
+                            }
+                            entityFields.put(name.toLowerCase(), fields);
+                        }
+                    }
+                    log.info("BusinessCommandInterpreter initialized with schema for entities: {}", entityNames);
+                }
+            } else {
+                log.warn("app-schema.json not found on classpath.");
+            }
+        } catch (Exception e) {
+            log.error("Failed to load app-schema.json: {}", e.getMessage());
+        }
+    }
+
+    public BusinessCommand interpret(String query) {
+        if (query == null || query.isBlank()) {
+            return BusinessCommand.builder().build();
+        }
+
+        // 1. If Gemini API key is configured, try calling LLM
+        if (geminiApiKey != null && !geminiApiKey.isBlank()) {
+            try {
+                BusinessCommand cmd = interpretWithGemini(query);
+                if (cmd != null && cmd.getEntity() != null) {
+                    return cmd;
+                }
+            } catch (Exception e) {
+                log.warn("Gemini interpretation failed, falling back to rule-based: {}", e.getMessage());
+            }
+        }
+
+        // 2. Deterministic rule-based interpretation using app-schema.json
+        return interpretWithRules(query);
+    }
+
+    private BusinessCommand interpretWithRules(String query) {
+        String lower = query.toLowerCase().trim();
+
+        // Detect target entity
+        String matchedEntity = null;
+        for (String ent : entityNames) {
+            String entLower = ent.toLowerCase();
+            if (lower.contains(entLower) || lower.contains(entLower + "s") || lower.contains(entLower + "es")) {
+                matchedEntity = ent;
+                break;
+            }
+        }
+
+        // Fallback: if no entity matched, check if there is only 1 entity in the system
+        if (matchedEntity == null && entityNames.size() == 1) {
+            matchedEntity = entityNames.get(0);
+        }
+
+        if (matchedEntity == null) {
+            return BusinessCommand.builder().build();
+        }
+
+        // Detect action
+        BusinessAction action;
+        if (matchesAny(lower, "crea", "crear", "registra", "registrar", "nuevo", "nueva", "inserta", "add", "create")) {
+            action = BusinessAction.CREATE;
+        } else if (matchesAny(lower, "elimina", "eliminar", "borra", "borrar", "quita", "quitar", "delete", "remove")) {
+            action = BusinessAction.DELETE;
+        } else if (matchesAny(lower, "actualiza", "actualizar", "modifica", "modificar", "cambia", "cambiar", "update")) {
+            action = BusinessAction.UPDATE;
+        } else if (matchesAny(lower, "busca", "buscar", "obten", "obtener", "consultar", "find", "get") && extractId(lower) != null) {
+            action = BusinessAction.READ;
+        } else if (matchesAny(lower, "lista", "listar", "todos", "todas", "ver", "list", "show", "all")) {
+            action = BusinessAction.LIST;
+        } else {
+            // Default to CREATE if field data is detected, else LIST
+            action = extractId(lower) != null ? BusinessAction.READ : BusinessAction.LIST;
+        }
+
+        Object id = extractId(lower);
+        Map<String, Object> data = extractData(lower, matchedEntity);
+
+        return BusinessCommand.builder()
+                .action(action)
+                .entity(matchedEntity)
+                .id(id)
+                .data(data)
+                .build();
+    }
+
+    private boolean matchesAny(String text, String... keywords) {
+        for (String kw : keywords) {
+            if (Pattern.compile("\\b" + Pattern.quote(kw) + "\\b", Pattern.CASE_INSENSITIVE).matcher(text).find()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private Object extractId(String text) {
+        // Matches "id 5", "id: 5", "id = 5", "con id 5"
+        Matcher m = Pattern.compile("\\b(?:id|identificador|con id|código|codigo)\\s*(?:es|=)?\\s*:?\\s*(\\d+)\\b", Pattern.CASE_INSENSITIVE).matcher(text);
+        if (m.find()) {
+            return Long.valueOf(m.group(1));
+        }
+        // Matches e.g. "cliente 3"
+        Matcher m2 = Pattern.compile("\\b(?:cliente|reserva|usuario|producto|pedido|item|entidad)\\s+(\\d+)\\b", Pattern.CASE_INSENSITIVE).matcher(text);
+        if (m2.find()) {
+            return Long.valueOf(m2.group(1));
+        }
+        return null;
+    }
+
+    private Map<String, Object> extractData(String query, String entityName) {
+        Map<String, Object> data = new HashMap<>();
+        List<String> fields = entityFields.getOrDefault(entityName.toLowerCase(), Collections.emptyList());
+
+        for (String field : fields) {
+            if (field.equalsIgnoreCase("id")) continue;
+
+            String fLower = field.toLowerCase();
+            // 1. Match explicit "campo [valor]" e.g. "telefono 71234567" or "nombre Juan"
+            Pattern p = Pattern.compile("\\b" + Pattern.quote(fLower) + "\\s*(?:es|de|:)?\\s*([A-Za-z0-9._@+-]+)", Pattern.CASE_INSENSITIVE);
+            Matcher m = p.matcher(query);
+            if (m.find()) {
+                data.put(field, convertFieldValue(m.group(1)));
+                continue;
+            }
+
+            // 2. Synonyms for common names
+            if (fLower.equals("nombre") || fLower.equals("name")) {
+                Matcher mNom = Pattern.compile("\\b(?:llamado|llamada|de nombre)\\s+([A-Za-z0-9]+)", Pattern.CASE_INSENSITIVE).matcher(query);
+                if (mNom.find()) {
+                    data.put(field, mNom.group(1));
+                }
+            } else if (fLower.equals("fecha") || fLower.equals("date")) {
+                if (query.contains("hoy") || query.contains("today")) {
+                    data.put(field, LocalDate.now().toString());
+                } else if (query.contains("mañana") || query.contains("tomorrow")) {
+                    data.put(field, LocalDate.now().plusDays(1).toString());
+                } else {
+                    Matcher mDate = Pattern.compile("(\\d{4}-\\d{2}-\\d{2})").matcher(query);
+                    if (mDate.find()) {
+                        data.put(field, mDate.group(1));
+                    }
+                }
+            }
+        }
+        return data;
+    }
+
+    private Object convertFieldValue(String val) {
+        if (val.matches("^\\d+$")) {
+            try {
+                return Long.valueOf(val);
+            } catch (Exception e) {
+                return val;
+            }
+        }
+        if (val.matches("^\\d+\\.\\d+$")) {
+            try {
+                return Double.valueOf(val);
+            } catch (Exception e) {
+                return val;
+            }
+        }
+        if (val.equalsIgnoreCase("true") || val.equalsIgnoreCase("false")) {
+            return Boolean.valueOf(val);
+        }
+        return val;
+    }
+
+    private BusinessCommand interpretWithGemini(String query) throws Exception {
+        String endpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=" + geminiApiKey;
+        String prompt = "Translate query into BusinessCommand JSON: {action, entity, id, data}. Available schema: "
+                + (schemaNode != null ? schemaNode.toString() : "")
+                + ". User query: " + query;
+
+        Map<String, Object> reqBody = Map.of(
+                "contents", List.of(Map.of("parts", List.of(Map.of("text", prompt)))),
+                "generationConfig", Map.of("responseMimeType", "application/json")
+        );
+
+        HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build();
+        HttpRequest req = HttpRequest.newBuilder()
+                .uri(URI.create(endpoint))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(reqBody)))
+                .timeout(Duration.ofSeconds(20))
+                .build();
+
+        HttpResponse<String> resp = client.send(req, HttpResponse.BodyHandlers.ofString());
+        if (resp.statusCode() == 200) {
+            JsonNode root = objectMapper.readTree(resp.body());
+            String text = root.at("/candidates/0/content/parts/0/text").asText();
+            return objectMapper.readValue(text, BusinessCommand.class);
+        }
+        return null;
+    }
+}
+

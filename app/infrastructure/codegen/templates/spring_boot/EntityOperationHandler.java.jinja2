@@ -1,0 +1,10 @@
+package {{ package_name }}.assistant.handler;
+
+import {{ package_name }}.assistant.model.AssistantResponse;
+import {{ package_name }}.assistant.model.BusinessCommand;
+
+public interface EntityOperationHandler {
+    String getEntityName();
+    AssistantResponse handle(BusinessCommand command);
+}
+

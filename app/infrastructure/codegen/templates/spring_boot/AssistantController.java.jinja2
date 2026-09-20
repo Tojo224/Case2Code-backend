@@ -1,0 +1,32 @@
+package {{ package_name }}.assistant.controller;
+
+import {{ package_name }}.assistant.handler.OperationRegistry;
+import {{ package_name }}.assistant.interpreter.BusinessCommandInterpreter;
+import {{ package_name }}.assistant.model.AssistantRequest;
+import {{ package_name }}.assistant.model.AssistantResponse;
+import {{ package_name }}.assistant.model.BusinessCommand;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.Valid;
+import lombok.RequiredArgsConstructor;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping("/api/assistant")
+@RequiredArgsConstructor
+@Tag(name = "Business Assistant", description = "Embedded AI & NLP Business Assistant for Domain Operations")
+public class AssistantController {
+
+    private final BusinessCommandInterpreter interpreter;
+    private final OperationRegistry registry;
+
+    @PostMapping("/execute")
+    @Operation(summary = "Execute a business command from natural language query")
+    public ResponseEntity<AssistantResponse> execute(@Valid @RequestBody AssistantRequest request) {
+        BusinessCommand command = interpreter.interpret(request.getQuery());
+        AssistantResponse response = registry.dispatch(command);
+        return ResponseEntity.ok(response);
+    }
+}
+

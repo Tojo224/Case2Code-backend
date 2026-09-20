@@ -1,0 +1,202 @@
+package {{ package_name }}.assistant.handler;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import {{ package_name }}.assistant.model.AssistantResponse;
+import {{ package_name }}.assistant.model.BusinessAction;
+import {{ package_name }}.assistant.model.BusinessCommand;
+import {{ package_name }}.domain.{{ entity.name }};
+import {{ package_name }}.service.{{ entity.name }}Service;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Component;
+
+import java.util.List;
+import java.util.Optional;
+
+@Slf4j
+@Component
+@RequiredArgsConstructor
+public class {{ entity.name }}OperationHandler implements EntityOperationHandler {
+
+    private final {{ entity.name }}Service service;
+    private final ObjectMapper objectMapper;
+
+    @Override
+    public String getEntityName() {
+        return "{{ entity.name }}";
+    }
+
+    @Override
+    public AssistantResponse handle(BusinessCommand command) {
+        if (command.getAction() == null) {
+            return AssistantResponse.builder()
+                    .success(false)
+                    .entity("{{ entity.name }}")
+                    .message("No se especificó la acción a ejecutar en {{ entity.name }}.")
+                    .build();
+        }
+
+        try {
+            switch (command.getAction()) {
+                case CREATE:
+                    return handleCreate(command);
+                case READ:
+                    return handleRead(command);
+                case LIST:
+                    return handleList();
+                case UPDATE:
+                    return handleUpdate(command);
+                case DELETE:
+                    return handleDelete(command);
+                default:
+                    return AssistantResponse.builder()
+                            .success(false)
+                            .entity("{{ entity.name }}")
+                            .action(command.getAction())
+                            .message("Acción no soportada: " + command.getAction())
+                            .build();
+            }
+        } catch (Exception e) {
+            log.error("Error executing command on {{ entity.name }}: {}", e.getMessage(), e);
+            return AssistantResponse.builder()
+                    .success(false)
+                    .entity("{{ entity.name }}")
+                    .action(command.getAction())
+                    .message("Error al ejecutar operación en {{ entity.name }}: " + e.getMessage())
+                    .build();
+        }
+    }
+
+    private AssistantResponse handleCreate(BusinessCommand command) {
+        {{ entity.name }} entity = objectMapper.convertValue(command.getData(), {{ entity.name }}.class);
+        {{ entity.name }} created = service.create(entity);
+        return AssistantResponse.builder()
+                .success(true)
+                .entity("{{ entity.name }}")
+                .action(BusinessAction.CREATE)
+                .message("Se creó exitosamente el registro de {{ entity.name }}.")
+                .result(created)
+                .build();
+    }
+
+    private AssistantResponse handleRead(BusinessCommand command) {
+        if (command.getId() == null) {
+            return AssistantResponse.builder()
+                    .success(false)
+                    .entity("{{ entity.name }}")
+                    .action(BusinessAction.READ)
+                    .message("Se requiere el identificador (id) para consultar {{ entity.name }}.")
+                    .build();
+        }
+        {{ entity.id_type }} id = parseId(command.getId());
+        Optional<{{ entity.name }}> opt = service.findById(id);
+        if (opt.isPresent()) {
+            return AssistantResponse.builder()
+                    .success(true)
+                    .entity("{{ entity.name }}")
+                    .action(BusinessAction.READ)
+                    .message("Registro de {{ entity.name }} encontrado.")
+                    .result(opt.get())
+                    .build();
+        } else {
+            return AssistantResponse.builder()
+                    .success(false)
+                    .entity("{{ entity.name }}")
+                    .action(BusinessAction.READ)
+                    .message("No se encontró el registro de {{ entity.name }} con id " + id)
+                    .build();
+        }
+    }
+
+    private AssistantResponse handleList() {
+        List<{{ entity.name }}> all = service.findAll();
+        return AssistantResponse.builder()
+                .success(true)
+                .entity("{{ entity.name }}")
+                .action(BusinessAction.LIST)
+                .message("Se encontraron " + all.size() + " registros de {{ entity.name }}.")
+                .result(all)
+                .build();
+    }
+
+    private AssistantResponse handleUpdate(BusinessCommand command) {
+        if (command.getId() == null) {
+            return AssistantResponse.builder()
+                    .success(false)
+                    .entity("{{ entity.name }}")
+                    .action(BusinessAction.UPDATE)
+                    .message("Se requiere el id para actualizar {{ entity.name }}.")
+                    .build();
+        }
+        {{ entity.id_type }} id = parseId(command.getId());
+        {{ entity.name }} entity = objectMapper.convertValue(command.getData(), {{ entity.name }}.class);
+        Optional<{{ entity.name }}> updated = service.update(id, entity);
+        if (updated.isPresent()) {
+            return AssistantResponse.builder()
+                    .success(true)
+                    .entity("{{ entity.name }}")
+                    .action(BusinessAction.UPDATE)
+                    .message("Registro de {{ entity.name }} actualizado exitosamente.")
+                    .result(updated.get())
+                    .build();
+        } else {
+            return AssistantResponse.builder()
+                    .success(false)
+                    .entity("{{ entity.name }}")
+                    .action(BusinessAction.UPDATE)
+                    .message("No se pudo actualizar: no existe {{ entity.name }} con id " + id)
+                    .build();
+        }
+    }
+
+    private AssistantResponse handleDelete(BusinessCommand command) {
+        if (command.getId() == null) {
+            return AssistantResponse.builder()
+                    .success(false)
+                    .entity("{{ entity.name }}")
+                    .action(BusinessAction.DELETE)
+                    .message("Se requiere el id para eliminar {{ entity.name }}.")
+                    .build();
+        }
+        {{ entity.id_type }} id = parseId(command.getId());
+        boolean deleted = service.deleteById(id);
+        return AssistantResponse.builder()
+                .success(deleted)
+                .entity("{{ entity.name }}")
+                .action(BusinessAction.DELETE)
+                .message(deleted
+                        ? "Registro de {{ entity.name }} eliminado exitosamente."
+                        : "No se encontró {{ entity.name }} con id " + id + " para eliminar.")
+                .build();
+    }
+
+    private {{ entity.id_type }} parseId(Object idObj) {
+        if (idObj instanceof Number) {
+{% if entity.id_type == "Long" %}
+            return ((Number) idObj).longValue();
+{% elif entity.id_type == "Integer" %}
+            return ((Number) idObj).intValue();
+{% else %}
+            return String.valueOf(idObj);
+{% endif %}
+        }
+        String clean = String.valueOf(idObj).replaceAll("[^0-9]", "");
+        if (clean.isEmpty()) {
+{% if entity.id_type == "Long" %}
+            return 0L;
+{% elif entity.id_type == "Integer" %}
+            return 0;
+{% else %}
+            return String.valueOf(idObj);
+{% endif %}
+        }
+{% if entity.id_type == "Long" %}
+        return Long.valueOf(clean);
+{% elif entity.id_type == "Integer" %}
+        return Integer.valueOf(clean);
+{% else %}
+        return String.valueOf(idObj);
+{% endif %}
+    }
+}
+

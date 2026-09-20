@@ -1,0 +1,43 @@
+package {{ package_name }}.assistant.handler;
+
+import {{ package_name }}.assistant.model.AssistantResponse;
+import {{ package_name }}.assistant.model.BusinessCommand;
+import org.springframework.stereotype.Component;
+
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+@Component
+public class OperationRegistry {
+
+    private final Map<String, EntityOperationHandler> handlers = new HashMap<>();
+
+    public OperationRegistry(List<EntityOperationHandler> handlerList) {
+        for (EntityOperationHandler handler : handlerList) {
+            handlers.put(handler.getEntityName().toLowerCase(), handler);
+        }
+    }
+
+    public AssistantResponse dispatch(BusinessCommand command) {
+        if (command == null || command.getEntity() == null) {
+            return AssistantResponse.builder()
+                    .success(false)
+                    .message("No se especificó ninguna entidad en el comando de negocio.")
+                    .build();
+        }
+
+        EntityOperationHandler handler = handlers.get(command.getEntity().toLowerCase());
+        if (handler == null) {
+            return AssistantResponse.builder()
+                    .success(false)
+                    .entity(command.getEntity())
+                    .action(command.getAction())
+                    .message("No existe un manejador registrado para la entidad: " + command.getEntity())
+                    .build();
+        }
+
+        return handler.handle(command);
+    }
+}
+

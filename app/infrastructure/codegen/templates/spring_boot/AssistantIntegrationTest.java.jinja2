@@ -1,0 +1,72 @@
+package {{ package_name }};
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import {{ package_name }}.assistant.model.AssistantRequest;
+import {{ package_name }}.assistant.model.AssistantResponse;
+import {{ package_name }}.assistant.model.BusinessAction;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.http.MediaType;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+@SpringBootTest
+@AutoConfigureMockMvc
+class AssistantIntegrationTest {
+
+    @Autowired
+    private MockMvc mockMvc;
+
+    @Autowired
+    private ObjectMapper objectMapper;
+
+    @Test
+    void testAssistantExecuteCreateAndListFlow() throws Exception {
+{% if first_entity %}
+        // 1. Execute natural language CREATE command
+        String createQuery = "Crea un {{ first_entity.name }}{% for a in first_entity.attributes %}{% if not a.primary_key %} {{ a.name }} Test{{ a.name|capitalize }}{% endif %}{% endfor %}";
+        AssistantRequest createReq = new AssistantRequest(createQuery);
+
+        MvcResult createResult = mockMvc.perform(post("/api/assistant/execute")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(createReq)))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        AssistantResponse createResp = objectMapper.readValue(
+                createResult.getResponse().getContentAsString(),
+                AssistantResponse.class
+        );
+
+        assertThat(createResp.isSuccess()).isTrue();
+        assertThat(createResp.getEntity()).isEqualToIgnoringCase("{{ first_entity.name }}");
+        assertThat(createResp.getAction()).isEqualTo(BusinessAction.CREATE);
+        assertThat(createResp.getResult()).isNotNull();
+
+        // 2. Execute natural language LIST command
+        String listQuery = "Listar todos los {{ first_entity.name }}";
+        AssistantRequest listReq = new AssistantRequest(listQuery);
+
+        MvcResult listResult = mockMvc.perform(post("/api/assistant/execute")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(listReq)))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        AssistantResponse listResp = objectMapper.readValue(
+                listResult.getResponse().getContentAsString(),
+                AssistantResponse.class
+        );
+
+        assertThat(listResp.isSuccess()).isTrue();
+        assertThat(listResp.getAction()).isEqualTo(BusinessAction.LIST);
+        assertThat(listResp.getResult()).isNotNull();
+{% endif %}
+    }
+}

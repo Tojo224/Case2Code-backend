@@ -1,0 +1,22 @@
+package {{ package_name }}.assistant.model;
+
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+import java.util.HashMap;
+import java.util.Map;
+
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
+public class BusinessCommand {
+    private BusinessAction action;
+    private String entity;
+    private Object id;
+    @Builder.Default
+    private Map<String, Object> data = new HashMap<>();
+}
+
