@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import shutil
@@ -58,6 +59,8 @@ class SpringBootGenerator(CodeGeneratorPort):
             src_main_java / "repository",
             src_main_java / "service",
             src_main_java / "controller",
+            src_main_java / "config",
+            src_main_java / "exception",
             src_main_resources,
             src_test_java,
             src_test_resources,
@@ -82,6 +85,22 @@ class SpringBootGenerator(CodeGeneratorPort):
         app_template = self.jinja_env.get_template("Application.java.jinja2")
         (src_main_java / "Application.java").write_text(app_template.render(root_context), encoding="utf-8")
 
+        # Render config and exception classes
+        cors_template = self.jinja_env.get_template("CorsConfig.java.jinja2")
+        (src_main_java / "config" / "CorsConfig.java").write_text(cors_template.render(root_context), encoding="utf-8")
+
+        openapi_template = self.jinja_env.get_template("OpenApiConfig.java.jinja2")
+        (src_main_java / "config" / "OpenApiConfig.java").write_text(openapi_template.render(root_context), encoding="utf-8")
+
+        res_not_found_template = self.jinja_env.get_template("ResourceNotFoundException.java.jinja2")
+        (src_main_java / "exception" / "ResourceNotFoundException.java").write_text(res_not_found_template.render(root_context), encoding="utf-8")
+
+        error_resp_template = self.jinja_env.get_template("ErrorResponse.java.jinja2")
+        (src_main_java / "exception" / "ErrorResponse.java").write_text(error_resp_template.render(root_context), encoding="utf-8")
+
+        global_handler_template = self.jinja_env.get_template("GlobalExceptionHandler.java.jinja2")
+        (src_main_java / "exception" / "GlobalExceptionHandler.java").write_text(global_handler_template.render(root_context), encoding="utf-8")
+
         # Render application.properties
         app_props_template = self.jinja_env.get_template("application.properties.jinja2")
         (src_main_resources / "application.properties").write_text(app_props_template.render(root_context), encoding="utf-8")
@@ -104,9 +123,11 @@ class SpringBootGenerator(CodeGeneratorPort):
         controller_template = self.jinja_env.get_template("Controller.java.jinja2")
         int_test_template = self.jinja_env.get_template("EntityIntegrationTest.java.jinja2")
 
+        all_entities = []
         for uml_class in document.classes:
             class_rels = relationships_by_class.get(uml_class.id, [])
             entity_data = self._build_entity_context(uml_class, class_rels)
+            all_entities.append(entity_data)
             ctx = {
                 "package_name": package_name,
                 "entity": entity_data,
@@ -146,6 +167,20 @@ class SpringBootGenerator(CodeGeneratorPort):
                     rel_test_template.render({"package_name": package_name, "rel": rel_ctx}),
                     encoding="utf-8",
                 )
+
+        # Render app-schema.json in root and in resources
+        schema_dict = self._build_app_schema(document, all_entities)
+        schema_json = json.dumps(schema_dict, indent=2)
+        (output_dir / "app-schema.json").write_text(schema_json, encoding="utf-8")
+        (src_main_resources / "app-schema.json").write_text(schema_json, encoding="utf-8")
+
+        # Render README.md
+        readme_template = self.jinja_env.get_template("README.md.jinja2")
+        readme_ctx = {
+            **root_context,
+            "entities": all_entities,
+        }
+        (output_dir / "README.md").write_text(readme_template.render(readme_ctx), encoding="utf-8")
 
         # Copy Maven Wrapper files
         self._copy_maven_wrapper(output_dir)
@@ -352,3 +387,62 @@ class SpringBootGenerator(CodeGeneratorPort):
             mvnw_dest.chmod(0o755)
         except Exception:
             pass
+
+    def _build_app_schema(self, document: CanonicalUmlDocument, all_entities: List[Dict[str, Any]]) -> Dict[str, Any]:
+        entities_schema = []
+        for entity in all_entities:
+            fields = []
+            pk_field = None
+            for attr in entity["attributes"]:
+                field_info = {
+                    "name": attr["name"],
+                    "type": attr["java_type"],
+                    "required": not attr["nullable"],
+                    "isPrimaryKey": attr["primary_key"],
+                }
+                fields.append(field_info)
+                if attr["primary_key"]:
+                    pk_field = field_info
+
+            relationships = []
+            for rel in entity["relationships"]:
+                rel_info = {
+                    "type": rel.get("jpa_annotation", "").replace("@", ""),
+                    "targetEntity": rel["target_class_name"],
+                    "fieldName": rel["field_name"],
+                    "isCollection": rel.get("is_collection", False),
+                }
+                if "join_column" in rel:
+                    rel_info["joinColumn"] = rel["join_column"]
+                relationships.append(rel_info)
+
+            base_path = f"/api/{entity['endpoint_path']}"
+            entities_schema.append({
+                "name": entity["name"],
+                "tableName": entity["table_name"],
+                "primaryKey": pk_field or {
+                    "name": "id",
+                    "type": "Long",
+                    "required": True,
+                    "isPrimaryKey": True,
+                },
+                "fields": fields,
+                "relationships": relationships,
+                "endpoints": {
+                    "base": base_path,
+                    "list": f"GET {base_path}",
+                    "getById": f"GET {base_path}/{{id}}",
+                    "create": f"POST {base_path}",
+                    "update": f"PUT {base_path}/{{id}}",
+                    "delete": f"DELETE {base_path}/{{id}}",
+                },
+            })
+
+        return {
+            "projectName": document.name,
+            "version": "1.0.0",
+            "description": document.description or f"Metadata schema for {document.name}",
+            "generatedAt": document.updated_at.isoformat(),
+            "entities": entities_schema,
+        }
+

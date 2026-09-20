@@ -1,0 +1,89 @@
+# {{ project_name }} - Generated Spring Boot Service
+
+{{ description }}
+
+Generated automatically by **Case2Code** (CASE UML Platform).
+
+---
+
+## 🚀 Quick Start
+
+### 1. Prerequisites
+- **Java 21** (Eclipse Adoptium OpenJDK 21 or Oracle JDK 21)
+- **PostgreSQL 16** (or Docker)
+
+### 2. Database Setup
+
+You can run a local PostgreSQL container using Docker:
+
+```bash
+docker run --name {{ artifact_id }}-postgres \
+  -e POSTGRES_DB={{ artifact_id|replace("-", "_") }}_db \
+  -e POSTGRES_USER=postgres \
+  -e POSTGRES_PASSWORD=postgrespassword \
+  -p 5432:5432 -d postgres:16-alpine
+```
+
+### 3. Run the Backend
+
+Using the included Maven Wrapper:
+
+**Linux / macOS:**
+```bash
+./mvnw spring-boot:run
+```
+
+**Windows:**
+```cmd
+mvnw.cmd spring-boot:run
+```
+
+### 4. Run Tests
+
+**Linux / macOS:**
+```bash
+./mvnw test
+```
+
+**Windows:**
+```cmd
+mvnw.cmd test
+```
+
+---
+
+## 📖 API Documentation & Swagger UI
+
+Once the application is running, open:
+
+- **Swagger UI**: [http://localhost:8080/swagger-ui.html](http://localhost:8080/swagger-ui.html)
+- **OpenAPI JSON**: [http://localhost:8080/v3/api-docs](http://localhost:8080/v3/api-docs)
+
+---
+
+## 📦 Generated Entities & REST Endpoints
+
+{% for entity in entities %}
+### {{ entity.name }}
+- **Base URL**: `/api/{{ entity.endpoint_path }}`
+- **Operations**:
+  - `GET /api/{{ entity.endpoint_path }}` - List all {{ entity.name }} records
+  - `GET /api/{{ entity.endpoint_path }}/{id}` - Get {{ entity.name }} by ID
+  - `POST /api/{{ entity.endpoint_path }}` - Create new {{ entity.name }}
+  - `PUT /api/{{ entity.endpoint_path }}/{id}` - Update existing {{ entity.name }}
+  - `DELETE /api/{{ entity.endpoint_path }}/{id}` - Delete {{ entity.name }} by ID
+{% for rel in entity.relationships %}
+{% if not rel.is_collection and rel.jpa_annotation == "@ManyToOne" %}
+  - `GET /api/{{ entity.endpoint_path }}/by-{{ rel.field_name }}/{id}` - Find by {{ rel.field_name }} ID
+{% endif %}
+{% endfor %}
+
+{% endfor %}
+
+---
+
+## 📄 Metadata & Schema
+
+The project includes an **`app-schema.json`** file in both the project root and `src/main/resources/app-schema.json`.
+This schema provides complete machine-readable metadata about entities, fields, relationships, and endpoints to be consumed by client applications (such as Flutter).
+

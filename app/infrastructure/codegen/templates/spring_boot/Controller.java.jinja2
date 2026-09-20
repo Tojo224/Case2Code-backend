@@ -2,6 +2,8 @@ package {{ package_name }}.controller;
 
 import {{ package_name }}.domain.{{ entity.name }};
 import {{ package_name }}.service.{{ entity.name }}Service;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
@@ -13,17 +15,19 @@ import java.util.List;
 @RestController
 @RequestMapping("/api/{{ entity.endpoint_path }}")
 @RequiredArgsConstructor
-@CrossOrigin(origins = "*")
+@Tag(name = "{{ entity.name }}", description = "Operations for {{ entity.name }} management")
 public class {{ entity.name }}Controller {
 
     private final {{ entity.name }}Service service;
 
     @GetMapping
+    @Operation(summary = "Get all {{ entity.name }} records")
     public ResponseEntity<List<{{ entity.name }}>> getAll() {
         return ResponseEntity.ok(service.findAll());
     }
 
     @GetMapping("/{id}")
+    @Operation(summary = "Get {{ entity.name }} by ID")
     public ResponseEntity<{{ entity.name }}> getById(@PathVariable {{ entity.id_type }} id) {
         return service.findById(id)
                 .map(ResponseEntity::ok)
@@ -33,6 +37,7 @@ public class {{ entity.name }}Controller {
 {% for rel in entity.relationships %}
 {% if not rel.is_collection and rel.jpa_annotation == "@ManyToOne" %}
     @GetMapping("/by-{{ rel.field_name }}/{{ '{' ~ rel.field_name ~ 'Id}' }}")
+    @Operation(summary = "Find {{ entity.name }} records by {{ rel.field_name }} ID")
     public ResponseEntity<List<{{ entity.name }}>> getBy{{ rel.field_name[0]|upper ~ rel.field_name[1:] }}(@PathVariable {{ rel.id_type }} {{ rel.field_name }}Id) {
         return ResponseEntity.ok(service.findBy{{ rel.field_name[0]|upper ~ rel.field_name[1:] }}Id({{ rel.field_name }}Id));
     }
@@ -40,12 +45,14 @@ public class {{ entity.name }}Controller {
 {% endfor %}
 
     @PostMapping
+    @Operation(summary = "Create a new {{ entity.name }}")
     public ResponseEntity<{{ entity.name }}> create(@Valid @RequestBody {{ entity.name }} entity) {
         {{ entity.name }} created = service.create(entity);
         return ResponseEntity.status(HttpStatus.CREATED).body(created);
     }
 
     @PutMapping("/{id}")
+    @Operation(summary = "Update {{ entity.name }} by ID")
     public ResponseEntity<{{ entity.name }}> update(
             @PathVariable {{ entity.id_type }} id,
             @Valid @RequestBody {{ entity.name }} entity
@@ -56,6 +63,7 @@ public class {{ entity.name }}Controller {
     }
 
     @DeleteMapping("/{id}")
+    @Operation(summary = "Delete {{ entity.name }} by ID")
     public ResponseEntity<Void> delete(@PathVariable {{ entity.id_type }} id) {
         if (service.deleteById(id)) {
             return ResponseEntity.noContent().build();
