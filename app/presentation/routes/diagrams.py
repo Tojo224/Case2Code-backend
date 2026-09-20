@@ -7,8 +7,11 @@ from app.application.command_bus import command_bus
 from app.core.database import get_db
 from app.domain.models.canonical_uml import CanonicalUmlDocument
 from app.domain.services.uml_validator import UmlValidationError
+from app.infrastructure.ai import ai_uml_interpreter
 from app.infrastructure.persistence.diagram_repository import SqlAlchemyDiagramRepository
 from app.presentation.schemas.diagram_schemas import (
+    AssistantPromptRequest,
+    AssistantPromptResponse,
     CommandExecutionResponse,
     CreateDiagramRequest,
     ExecuteCommandRequest,
@@ -104,4 +107,33 @@ def execute_command(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Internal error processing command: {str(e)}",
         )
+
+
+@router.post("/{diagram_id}/assistant", response_model=AssistantPromptResponse)
+async def process_assistant_prompt(
+    diagram_id: str,
+    payload: AssistantPromptRequest,
+    repo: SqlAlchemyDiagramRepository = Depends(get_repository),
+):
+    document = repo.get_by_id(diagram_id)
+    if not document:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Diagram '{diagram_id}' not found.",
+        )
+
+    updated_doc, executed_commands, reply = await ai_uml_interpreter.interpret_and_execute(
+        payload.prompt, document
+    )
+    if executed_commands:
+        repo.save(updated_doc)
+
+    return AssistantPromptResponse(
+        success=bool(executed_commands),
+        reply=reply,
+        executed_commands=executed_commands,
+        document=updated_doc,
+        error=None,
+    )
+
 

@@ -1,4 +1,5 @@
 import os
+from typing import Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -14,6 +15,10 @@ class Settings(BaseSettings):
     
     # Fallback to SQLite if PostgreSQL connection fails in local testing/dev
     SQLITE_FALLBACK_URL: str = "sqlite:///./case2code.db"
+
+    # AI / LLM Configuration
+    GEMINI_API_KEY: Optional[str] = os.getenv("GEMINI_API_KEY", None)
+    GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
 
     # CORS configuration
     CORS_ORIGINS: list[str] = [

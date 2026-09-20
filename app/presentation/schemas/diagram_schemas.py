@@ -20,3 +20,15 @@ class CommandExecutionResponse(BaseModel):
     document: CanonicalUmlDocument
     error: Optional[str] = None
 
+
+class AssistantPromptRequest(BaseModel):
+    prompt: str = Field(..., min_length=1)
+
+
+class AssistantPromptResponse(BaseModel):
+    success: bool
+    reply: str
+    executed_commands: list[UmlCommand]
+    document: CanonicalUmlDocument
+    error: Optional[str] = None
+
