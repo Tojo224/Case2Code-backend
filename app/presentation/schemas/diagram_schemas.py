@@ -19,3 +19,4 @@ class CommandExecutionResponse(BaseModel):
     version: int
     document: CanonicalUmlDocument
     error: Optional[str] = None
+

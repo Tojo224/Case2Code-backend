@@ -53,3 +53,4 @@ class SqlAlchemyDiagramRepository(DiagramRepositoryPort):
         self.db.delete(record)
         self.db.commit()
         return True
+

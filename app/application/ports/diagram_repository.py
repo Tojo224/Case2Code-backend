@@ -23,3 +23,4 @@ class DiagramRepositoryPort(ABC):
     def delete(self, diagram_id: str) -> bool:
         """Delete a canonical UML document by ID."""
         pass
+

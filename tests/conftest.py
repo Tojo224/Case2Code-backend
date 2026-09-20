@@ -70,3 +70,4 @@ def sample_document():
         classes=[],
         relationships=[],
     )
+

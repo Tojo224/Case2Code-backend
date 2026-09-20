@@ -147,3 +147,4 @@ class UmlValidator:
                 raise UmlValidationError(
                     f"Relationship '{rel.id}' references non-existent target class '{rel.target_class_id}'."
                 )
+

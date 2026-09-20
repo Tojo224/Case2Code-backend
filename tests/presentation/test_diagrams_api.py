@@ -72,3 +72,4 @@ def test_diagram_crud_flow(client):
     # 8. Confirm deleted
     resp_check = client.get(f"/api/diagrams/{diagram_id}")
     assert resp_check.status_code == 404
+

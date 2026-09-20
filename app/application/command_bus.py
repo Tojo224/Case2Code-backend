@@ -54,3 +54,4 @@ class CommandBus:
 
 # Global singleton instance
 command_bus = CommandBus()
+

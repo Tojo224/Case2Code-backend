@@ -38,6 +38,11 @@ htmlcov/
 .env.local
 *.local
 
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
+
 # IDEs
 .idea/
 .vscode/
@@ -47,3 +52,4 @@ htmlcov/
 # Output generated projects during tests
 generated_projects/
 temp_output/
+

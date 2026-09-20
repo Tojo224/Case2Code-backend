@@ -76,3 +76,4 @@ def test_canonical_uml_document_serialization():
     assert reconstructed.id == doc.id
     assert reconstructed.classes[0].name == "Cliente"
     assert reconstructed.relationships[0].source_class_id == "class-cliente"
+

@@ -97,3 +97,4 @@ def test_validate_relationship_endpoints(sample_document):
                 type=RelationshipTypeEnum.ONE_TO_MANY,
             ),
         )
+

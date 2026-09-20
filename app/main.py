@@ -42,3 +42,4 @@ def health_check():
         "service": settings.PROJECT_NAME,
         "version": "1.0.0",
     }
+

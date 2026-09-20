@@ -121,3 +121,4 @@ def test_command_move_class(sample_document):
     doc = command_bus.dispatch(doc, cmd_move)
     assert doc.classes[0].position.x == 250.0
     assert doc.classes[0].position.y == 350.0
+

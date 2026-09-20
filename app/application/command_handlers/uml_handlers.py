@@ -201,3 +201,4 @@ def handle_delete_relationship(document: CanonicalUmlDocument, cmd: DeleteRelati
 
     _touch_document(document)
     return document
+

@@ -126,3 +126,4 @@ UmlCommand = Annotated[
     ],
     Field(discriminator="command_type"),
 ]
+
