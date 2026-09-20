@@ -82,3 +82,4 @@ def test_one_to_many_relationship_code_generation():
         rel_test_code = (test_dir / "ClienteReservaRelationshipIntegrationTest.java").read_text(encoding="utf-8")
         assert "class ClienteReservaRelationshipIntegrationTest" in rel_test_code
         assert "target.setCliente(savedSource);" in rel_test_code
+

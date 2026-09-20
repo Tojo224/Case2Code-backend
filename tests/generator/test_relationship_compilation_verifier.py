@@ -75,3 +75,4 @@ def test_relationship_project_mvnw_test_and_package():
         assert len(jar_files) >= 1
     finally:
         shutil.rmtree(output_dir, ignore_errors=True)
+
