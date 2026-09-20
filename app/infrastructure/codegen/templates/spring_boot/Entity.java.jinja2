@@ -1,0 +1,36 @@
+package {{ package_name }}.domain;
+
+import jakarta.persistence.*;
+import jakarta.validation.constraints.*;
+import lombok.*;
+
+{% if entity.imports %}
+{% for imp in entity.imports %}
+import {{ imp }};
+{% endfor %}
+{% endif %}
+
+@Entity
+@Table(name = "{{ entity.table_name }}")
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+public class {{ entity.name }} {
+
+{% for attr in entity.attributes %}
+{% if attr.primary_key %}
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private {{ attr.java_type }} {{ attr.name }};
+{% else %}
+    {% if not attr.nullable %}
+    @NotNull
+    {% endif %}
+    @Column(name = "{{ attr.column_name }}", nullable = {{ "true" if attr.nullable else "false" }})
+    private {{ attr.java_type }} {{ attr.name }};
+{% endif %}
+
+{% endfor %}
+}

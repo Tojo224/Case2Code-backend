@@ -1,0 +1,56 @@
+package {{ package_name }}.controller;
+
+import {{ package_name }}.domain.{{ entity.name }};
+import {{ package_name }}.service.{{ entity.name }}Service;
+import jakarta.validation.Valid;
+import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.List;
+
+@RestController
+@RequestMapping("/api/{{ entity.endpoint_path }}")
+@RequiredArgsConstructor
+@CrossOrigin(origins = "*")
+public class {{ entity.name }}Controller {
+
+    private final {{ entity.name }}Service service;
+
+    @GetMapping
+    public ResponseEntity<List<{{ entity.name }}>> getAll() {
+        return ResponseEntity.ok(service.findAll());
+    }
+
+    @GetMapping("/{id}")
+    public ResponseEntity<{{ entity.name }}> getById(@PathVariable {{ entity.id_type }} id) {
+        return service.findById(id)
+                .map(ResponseEntity::ok)
+                .orElse(ResponseEntity.notFound().build());
+    }
+
+    @PostMapping
+    public ResponseEntity<{{ entity.name }}> create(@Valid @RequestBody {{ entity.name }} entity) {
+        {{ entity.name }} created = service.create(entity);
+        return ResponseEntity.status(HttpStatus.CREATED).body(created);
+    }
+
+    @PutMapping("/{id}")
+    public ResponseEntity<{{ entity.name }}> update(
+            @PathVariable {{ entity.id_type }} id,
+            @Valid @RequestBody {{ entity.name }} entity
+    ) {
+        return service.update(id, entity)
+                .map(ResponseEntity::ok)
+                .orElse(ResponseEntity.notFound().build());
+    }
+
+    @DeleteMapping("/{id}")
+    public ResponseEntity<Void> delete(@PathVariable {{ entity.id_type }} id) {
+        if (service.deleteById(id)) {
+            return ResponseEntity.noContent().build();
+        }
+        return ResponseEntity.notFound().build();
+    }
+}

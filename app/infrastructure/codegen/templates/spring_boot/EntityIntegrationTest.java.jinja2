@@ -1,0 +1,31 @@
+package {{ package_name }};
+
+import {{ package_name }}.domain.{{ entity.name }};
+import {{ package_name }}.repository.{{ entity.name }}Repository;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+@SpringBootTest
+class {{ entity.name }}IntegrationTest {
+
+    @Autowired
+    private {{ entity.name }}Repository repository;
+
+    @Test
+    void testCreateAndFind() {
+        {{ entity.name }} entity = {{ entity.name }}.builder()
+{% for attr in entity.updatable_attributes %}
+{% if attr.sample_value %}
+            .{{ attr.name }}({{ attr.sample_value }})
+{% endif %}
+{% endfor %}
+            .build();
+
+        {{ entity.name }} saved = repository.save(entity);
+        assertNotNull(saved.getId());
+        assertTrue(repository.findById(saved.getId()).isPresent());
+    }
+}

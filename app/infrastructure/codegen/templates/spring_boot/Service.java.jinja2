@@ -1,0 +1,50 @@
+package {{ package_name }}.service;
+
+import {{ package_name }}.domain.{{ entity.name }};
+import {{ package_name }}.repository.{{ entity.name }}Repository;
+import lombok.RequiredArgsConstructor;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.util.List;
+import java.util.Optional;
+
+@Service
+@RequiredArgsConstructor
+@Transactional(readOnly = true)
+public class {{ entity.name }}Service {
+
+    private final {{ entity.name }}Repository repository;
+
+    public List<{{ entity.name }}> findAll() {
+        return repository.findAll();
+    }
+
+    public Optional<{{ entity.name }}> findById({{ entity.id_type }} id) {
+        return repository.findById(id);
+    }
+
+    @Transactional
+    public {{ entity.name }} create({{ entity.name }} entity) {
+        return repository.save(entity);
+    }
+
+    @Transactional
+    public Optional<{{ entity.name }}> update({{ entity.id_type }} id, {{ entity.name }} updatedEntity) {
+        return repository.findById(id).map(existing -> {
+{% for attr in entity.updatable_attributes %}
+            existing.set{{ attr.name[0]|upper ~ attr.name[1:] }}(updatedEntity.get{{ attr.name[0]|upper ~ attr.name[1:] }}());
+{% endfor %}
+            return repository.save(existing);
+        });
+    }
+
+    @Transactional
+    public boolean deleteById({{ entity.id_type }} id) {
+        if (repository.existsById(id)) {
+            repository.deleteById(id);
+            return true;
+        }
+        return false;
+    }
+}
