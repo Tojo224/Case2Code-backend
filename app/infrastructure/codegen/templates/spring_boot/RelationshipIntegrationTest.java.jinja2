@@ -1,0 +1,53 @@
+package {{ package_name }};
+
+import {{ package_name }}.domain.{{ rel.source_class_name }};
+import {{ package_name }}.domain.{{ rel.target_class_name }};
+import {{ package_name }}.repository.{{ rel.source_class_name }}Repository;
+import {{ package_name }}.repository.{{ rel.target_class_name }}Repository;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+
+import java.util.List;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+@SpringBootTest
+class {{ rel.test_class_name }} {
+
+    @Autowired
+    private {{ rel.source_class_name }}Repository sourceRepository;
+
+    @Autowired
+    private {{ rel.target_class_name }}Repository targetRepository;
+
+    @Test
+    void testRelationshipLinkage() {
+        // 1. Create and persist source entity
+        {{ rel.source_class_name }} source = {{ rel.source_class_name }}.builder()
+{% for attr in rel.source_sample_attrs %}
+            .{{ attr.name }}({{ attr.sample_value }})
+{% endfor %}
+            .build();
+        {{ rel.source_class_name }} savedSource = sourceRepository.save(source);
+        assertNotNull(savedSource.getId(), "Source ID should be generated");
+
+        // 2. Create and link target entity
+        {{ rel.target_class_name }} target = {{ rel.target_class_name }}.builder()
+{% for attr in rel.target_sample_attrs %}
+            .{{ attr.name }}({{ attr.sample_value }})
+{% endfor %}
+            .build();
+
+{% if rel.target_to_source_setter %}
+        target.{{ rel.target_to_source_setter }}(savedSource);
+        {{ rel.target_class_name }} savedTarget = targetRepository.save(target);
+        assertNotNull(savedTarget.getId(), "Target ID should be generated");
+        assertNotNull(savedTarget.{{ rel.target_to_source_getter }}(), "Target should reference source");
+        assertEquals(savedSource.getId(), savedTarget.{{ rel.target_to_source_getter }}().getId());
+{% else %}
+        {{ rel.target_class_name }} savedTarget = targetRepository.save(target);
+        assertNotNull(savedTarget.getId());
+{% endif %}
+    }
+}
