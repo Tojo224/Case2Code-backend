@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.security import create_access_token, decode_access_token, verify_password
+from app.core.security import create_access_token, decode_access_token, hash_password, verify_password
 from app.domain.models.user import User
 from app.infrastructure.persistence.user_repository import SqlAlchemyUserRepository
 from app.presentation.schemas.auth_schemas import AuthResponse, LoginRequest, RegisterRequest
@@ -56,31 +56,31 @@ def get_current_user(
 
 DEMO_USERS = [
     {
-        "id": "usr-demo-profesor",
-        "email": "profesor@case2code.io",
-        "name": "Prof. Carlos Mendoza",
-        "password": "demo1234password",
+        "id": "usr-juan",
+        "email": "juan@case2code.io",
+        "name": "Juan",
+        "password": "Brada123",
         "avatar_color": "#3B82F6",  # Blue
     },
     {
-        "id": "usr-demo-estudiante-a",
-        "email": "estudiante.a@case2code.io",
-        "name": "Ana Gómez (Estudiante A)",
-        "password": "demo1234password",
+        "id": "usr-maria",
+        "email": "maria@case2code.io",
+        "name": "Maria",
+        "password": "Brada123",
         "avatar_color": "#10B981",  # Emerald
     },
     {
-        "id": "usr-demo-estudiante-b",
-        "email": "estudiante.b@case2code.io",
-        "name": "Bruno Torres (Estudiante B)",
-        "password": "demo1234password",
+        "id": "usr-pedro",
+        "email": "pedro@case2code.io",
+        "name": "Pedro",
+        "password": "Brada123",
         "avatar_color": "#F59E0B",  # Amber
     },
     {
-        "id": "usr-demo-estudiante-c",
-        "email": "estudiante.c@case2code.io",
-        "name": "Clara Rojas (Estudiante C)",
-        "password": "demo1234password",
+        "id": "usr-sofia",
+        "email": "sofia@case2code.io",
+        "name": "Sofia",
+        "password": "Brada123",
         "avatar_color": "#EC4899",  # Pink
     },
 ]
@@ -97,6 +97,11 @@ def ensure_demo_users_seeded(repo: SqlAlchemyUserRepository):
                 avatar_color=u["avatar_color"],
                 user_id=u["id"],
             )
+        else:
+            existing.name = u["name"]
+            existing.hashed_password = hash_password(u["password"])
+            existing.avatar_color = u["avatar_color"]
+            repo.db.commit()
 
 
 @router.post("/register", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
@@ -172,3 +177,4 @@ def get_demo_users(repo: SqlAlchemyUserRepository = Depends(get_user_repo)):
             token = create_access_token({"sub": user.id, "email": user.email, "name": user.name})
             result.append(AuthResponse(access_token=token, token_type="bearer", user=user))
     return result
+
