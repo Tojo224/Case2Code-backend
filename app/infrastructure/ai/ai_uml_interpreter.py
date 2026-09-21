@@ -40,20 +40,24 @@ class AiUmlInterpreter:
         prompt: str,
         document: CanonicalUmlDocument,
         image_data: Optional[Dict[str, str]] = None,
+        api_key_override: Optional[str] = None,
     ) -> Tuple[CanonicalUmlDocument, List[UmlCommand], str]:
         """Translates natural language prompt and/or image to commands and executes them on the document.
         Returns:
             (updated_document, executed_commands, assistant_reply)
         """
-        raw_commands = await self._generate_raw_commands(prompt, document, image_data)
+        raw_commands, clarification_question = await self._generate_raw_commands(
+            prompt, document, image_data=image_data, api_key_override=api_key_override
+        )
         if not raw_commands:
+            if clarification_question:
+                return (document, [], clarification_question)
             return (
                 document,
                 [],
                 "No pude identificar entidades ni relaciones en el mensaje o imagen. "
-                "Puedes adjuntar un boceto dibujado a mano o pedirme:\n"
-                "- 'Crea la clase Cliente con id y nombre'\n"
-                "- 'Crea la clase Pedido y relaciónala 1 a N con Cliente'",
+                "¿Qué base de datos o modelo te gustaría crear? Podés pegarme un script SQL (CREATE TABLE), "
+                "una lista de tablas (ej. 'Cliente (id, nombre), Pedido (id, total, cliente_id)') o describir tu negocio.",
             )
 
         resolved_commands, auto_roles, validation_error = self._resolve_and_validate_commands(
@@ -88,29 +92,51 @@ class AiUmlInterpreter:
                 )
 
         reply = self._build_natural_reply(executed_commands, auto_roles)
+        if clarification_question:
+            reply += f"\n\n❓ **Consulta del Asistente:** {clarification_question}"
         return current_doc, executed_commands, reply
+
+    def _extract_commands_and_question(self, res: Any) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+        if isinstance(res, tuple) and len(res) == 2:
+            return res[0], res[1]
+        if isinstance(res, dict):
+            return res.get("commands", []), res.get("question")
+        if isinstance(res, list):
+            return res, None
+        return [], None
 
     async def _generate_raw_commands(
         self,
         prompt: str,
         document: CanonicalUmlDocument,
         image_data: Optional[Dict[str, str]] = None,
-    ) -> List[Dict[str, Any]]:
-        # First try primary provider (Gemini if key is present)
-        if self.primary_provider != self.rule_based_provider:
+        api_key_override: Optional[str] = None,
+    ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+        active_provider = self.primary_provider
+
+        # If an override key was passed, instantiate provider with that key
+        if api_key_override:
+            active_provider = GeminiAiProvider(api_key=api_key_override, model=settings.GEMINI_MODEL)
+        elif self.primary_provider == self.rule_based_provider and settings.GEMINI_API_KEY:
+            active_provider = GeminiAiProvider(api_key=settings.GEMINI_API_KEY, model=settings.GEMINI_MODEL)
+
+        # First try active primary provider (Gemini if key is present)
+        if active_provider != self.rule_based_provider:
             try:
-                raw_cmds = await self.primary_provider.generate_commands(
+                res = await active_provider.generate_commands(
                     prompt, document, image_data=image_data
                 )
-                if raw_cmds:
-                    return raw_cmds
+                cmds, question = self._extract_commands_and_question(res)
+                if cmds or question:
+                    return cmds, question
             except Exception as e:
                 logger.warning(f"Primary AI provider failed, falling back to rule-based: {e}")
 
         # Fallback to deterministic rule-based
-        return await self.rule_based_provider.generate_commands(
+        res = await self.rule_based_provider.generate_commands(
             prompt, document, image_data=image_data
         )
+        return self._extract_commands_and_question(res)
 
     def _resolve_and_validate_commands(
         self, raw_commands: List[Dict[str, Any]], initial_doc: CanonicalUmlDocument

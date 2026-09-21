@@ -238,7 +238,7 @@ async def process_assistant_prompt(
 
     prompt_text = payload.prompt or "Replicar este diseño de base de datos en el diagrama."
     updated_doc, executed_commands, reply = await ai_uml_interpreter.interpret_and_execute(
-        prompt_text, document, image_data=image_data
+        prompt_text, document, image_data=image_data, api_key_override=payload.gemini_api_key
     )
     if executed_commands:
         repo.save(updated_doc)

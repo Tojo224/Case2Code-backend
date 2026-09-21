@@ -224,7 +224,7 @@ public class BusinessCommandInterpreter {
     }
 
     private BusinessCommand interpretWithGemini(String query) throws Exception {
-        String endpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=" + geminiApiKey;
+        String endpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=" + geminiApiKey;
         String prompt = "Translate query into BusinessCommand JSON: {action, entity, id, data}. Available schema: "
                 + (schemaNode != null ? schemaNode.toString() : "")
                 + ". User query: " + query;

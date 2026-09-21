@@ -266,3 +266,84 @@ async def test_multi_relationship_role_auto_resolution(sample_document):
     assert "Roles asignados" in reply
 
 
+@pytest.mark.asyncio
+async def test_rule_based_sql_ddl_multi_table_with_fk(sample_document):
+    sql_script = """
+    CREATE TABLE Categoria (
+        id BIGINT PRIMARY KEY,
+        nombre VARCHAR(100) NOT NULL
+    );
+    CREATE TABLE Articulo (
+        id BIGINT PRIMARY KEY,
+        titulo VARCHAR(150),
+        precio DECIMAL(10, 2),
+        categoria_id BIGINT,
+        CONSTRAINT fk_art_cat FOREIGN KEY (categoria_id) REFERENCES Categoria(id)
+    );
+    """
+    interpreter = AiUmlInterpreter(provider=RuleBasedAiProvider())
+    doc, cmds, reply = await interpreter.interpret_and_execute(sql_script, sample_document)
+
+    # Must have created Categoria, Articulo, their attributes, and the relationship
+    cat_cls = next((c for c in doc.classes if c.name == "Categoria"), None)
+    art_cls = next((c for c in doc.classes if c.name == "Articulo"), None)
+    assert cat_cls is not None
+    assert art_cls is not None
+    assert any(a.name == "precio" and a.type == "Double" for a in art_cls.attributes)
+
+    # Check relationship
+    assert any(
+        r.source_class_id == art_cls.id and r.target_class_id == cat_cls.id
+        for r in doc.relationships
+    )
+
+
+@pytest.mark.asyncio
+async def test_rule_based_schema_notation_multi_table_with_fk(sample_document):
+    prompt = """
+    Doctor (id, nombre, especialidad)
+    Paciente (id, nombre, telefono)
+    Cita (id, fecha, doctor_id, paciente_id)
+    """
+    interpreter = AiUmlInterpreter(provider=RuleBasedAiProvider())
+    doc, cmds, reply = await interpreter.interpret_and_execute(prompt, sample_document)
+
+    doc_names = {c.name for c in doc.classes}
+    assert "Doctor" in doc_names
+    assert "Paciente" in doc_names
+    assert "Cita" in doc_names
+
+    cita_cls = next(c for c in doc.classes if c.name == "Cita")
+    doctor_cls = next(c for c in doc.classes if c.name == "Doctor")
+    paciente_cls = next(c for c in doc.classes if c.name == "Paciente")
+
+    # Check FK relationships were auto-linked
+    cita_targets = {r.target_class_id for r in doc.relationships if r.source_class_id == cita_cls.id}
+    assert doctor_cls.id in cita_targets
+    assert paciente_cls.id in cita_targets
+
+
+@pytest.mark.asyncio
+async def test_rule_based_entity_list_without_crea(sample_document):
+    prompt = "Base de datos de biblioteca: Libro, Autor, Editorial, Prestamo"
+    interpreter = AiUmlInterpreter(provider=RuleBasedAiProvider())
+    doc, cmds, reply = await interpreter.interpret_and_execute(prompt, sample_document)
+
+    doc_names = {c.name for c in doc.classes}
+    assert "Libro" in doc_names
+    assert "Autor" in doc_names
+    assert "Editorial" in doc_names
+    assert "Prestamo" in doc_names
+
+
+@pytest.mark.asyncio
+async def test_clarification_question_when_unknown_or_ambiguous(sample_document):
+    prompt = "Hola, que tal, no se que hacer aca con esto"
+    interpreter = AiUmlInterpreter(provider=RuleBasedAiProvider())
+    doc, cmds, reply = await interpreter.interpret_and_execute(prompt, sample_document)
+
+    assert len(cmds) == 0
+    # Must ask a clarification question in Spanish
+    assert "¿Qué base de datos o modelo te gustaría crear?" in reply
+
+

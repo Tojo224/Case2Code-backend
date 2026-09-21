@@ -18,7 +18,7 @@ class Settings(BaseSettings):
 
     # AI / LLM Configuration
     GEMINI_API_KEY: Optional[str] = os.getenv("GEMINI_API_KEY", None)
-    GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+    GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
 
     # Auth & JWT Configuration
     JWT_SECRET: str = os.getenv("JWT_SECRET", "case2code-super-secret-key-change-in-prod-123456789")

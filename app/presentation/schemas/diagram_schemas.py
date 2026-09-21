@@ -25,6 +25,7 @@ class AssistantPromptRequest(BaseModel):
     prompt: Optional[str] = "Replicar este diseño en el diagrama."
     image_base64: Optional[str] = None
     image_mime_type: Optional[str] = "image/png"
+    gemini_api_key: Optional[str] = None
 
 
 class AssistantPromptResponse(BaseModel):
