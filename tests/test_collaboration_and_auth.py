@@ -32,21 +32,6 @@ def test_security_jwt():
 
 
 def test_auth_endpoints(client):
-    # Test demo users endpoint
-    resp = client.get("/api/auth/demo-users")
-    assert resp.status_code == 200
-    demo_users = resp.json()
-    assert len(demo_users) >= 3
-    prof = next(u for u in demo_users if u["user"]["email"] == "juan@case2code.io")
-    assert prof["user"]["name"] == "Juan"
-    token = prof["access_token"]
-
-    # Test /api/auth/me
-    me_resp = client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
-    assert me_resp.status_code == 200
-    assert me_resp.json()["email"] == "juan@case2code.io"
-
-    # Test custom registration
     test_email = f"user_{uuid.uuid4().hex[:6]}@case2code.io"
     reg_resp = client.post(
         "/api/auth/register",
@@ -60,6 +45,12 @@ def test_auth_endpoints(client):
     assert reg_resp.status_code == 201
     reg_data = reg_resp.json()
     assert reg_data["user"]["email"] == test_email
+    token = reg_data["access_token"]
+
+    # Test /api/auth/me
+    me_resp = client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
+    assert me_resp.status_code == 200
+    assert me_resp.json()["email"] == test_email
 
     # Test login
     login_resp = client.post(
@@ -74,10 +65,17 @@ def test_auth_endpoints(client):
 
 
 def test_diagram_ownership_and_collaborators(client):
-    # Get tokens for Juan and Maria
-    demo_resp = client.get("/api/auth/demo-users").json()
-    prof = next(u for u in demo_resp if u["user"]["email"] == "juan@case2code.io")
-    est_a = next(u for u in demo_resp if u["user"]["email"] == "maria@case2code.io")
+    prof_email = f"prof_{uuid.uuid4().hex[:6]}@case2code.io"
+    est_email = f"est_{uuid.uuid4().hex[:6]}@case2code.io"
+
+    prof = client.post(
+        "/api/auth/register",
+        json={"email": prof_email, "password": "Password123!", "name": "Profesor"},
+    ).json()
+    est_a = client.post(
+        "/api/auth/register",
+        json={"email": est_email, "password": "Password123!", "name": "Estudiante A"},
+    ).json()
 
     prof_token = prof["access_token"]
     est_a_token = est_a["access_token"]
@@ -99,11 +97,11 @@ def test_diagram_ownership_and_collaborators(client):
     collabs = collab_resp.json()
     assert any(c["user_id"] == prof["user"]["id"] and c["role"] == "OWNER" for c in collabs)
 
-    # Juan invites Maria
+    # Profesor invites Estudiante A
     invite_resp = client.post(
         f"/api/diagrams/{diag_id}/collaborators",
         headers={"Authorization": f"Bearer {prof_token}"},
-        json={"email": "maria@case2code.io", "role": "EDITOR"},
+        json={"email": est_email, "role": "EDITOR"},
     )
     assert invite_resp.status_code == 200
     assert invite_resp.json()["user_id"] == est_a["user"]["id"]
@@ -117,9 +115,12 @@ def test_diagram_ownership_and_collaborators(client):
 
 
 def test_websocket_collaboration(client):
-    demo_resp = client.get("/api/auth/demo-users").json()
-    prof = demo_resp[0]
-    prof_token = prof["access_token"]
+    user_email = f"wsuser_{uuid.uuid4().hex[:6]}@case2code.io"
+    reg = client.post(
+        "/api/auth/register",
+        json={"email": user_email, "password": "Password123!", "name": "WS User"},
+    ).json()
+    prof_token = reg["access_token"]
 
     # Create diagram
     create_resp = client.post(
@@ -144,23 +145,26 @@ def test_websocket_collaboration(client):
 
 
 def test_unauthenticated_cannot_access_private_diagram(client):
-    demo_resp = client.get("/api/auth/demo-users").json()
-    juan = next(u for u in demo_resp if u["user"]["email"] == "juan@case2code.io")
+    user_email = f"owner_{uuid.uuid4().hex[:6]}@case2code.io"
+    user_resp = client.post(
+        "/api/auth/register",
+        json={"email": user_email, "password": "Password123!", "name": "Owner User"},
+    ).json()
 
-    # Juan creates private diagram
+    # User creates private diagram
     create_resp = client.post(
         "/api/diagrams",
-        headers={"Authorization": f"Bearer {juan['access_token']}"},
-        json={"name": "Diagrama Privado de Juan"},
+        headers={"Authorization": f"Bearer {user_resp['access_token']}"},
+        json={"name": "Diagrama Privado de Owner"},
     )
     assert create_resp.status_code == 201
     diag_id = create_resp.json()["id"]
 
-    # Unauthenticated user lists diagrams: should NOT see Juan's private diagram
+    # Unauthenticated user lists diagrams: should NOT see private diagram
     anon_list = client.get("/api/diagrams")
     assert anon_list.status_code == 200
     assert not any(d["id"] == diag_id for d in anon_list.json())
 
-    # Unauthenticated user tries to directly GET Juan's private diagram: 401 Unauthorized
+    # Unauthenticated user tries to directly GET private diagram: 401 Unauthorized
     anon_get = client.get(f"/api/diagrams/{diag_id}")
     assert anon_get.status_code == 401

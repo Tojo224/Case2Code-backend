@@ -48,7 +48,6 @@ def init_db() -> None:
                 conn.execute(text("ALTER TABLE diagrams ADD COLUMN IF NOT EXISTS owner_id VARCHAR(64)"))
                 conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token VARCHAR(255)"))
                 conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token_expires_at TIMESTAMP WITH TIME ZONE"))
-                conn.execute(text("UPDATE diagrams SET owner_id = 'usr-juan' WHERE owner_id IS NULL"))
             else:
                 # Check SQLite schema for owner_id in diagrams
                 result = conn.execute(text("PRAGMA table_info(diagrams)")).fetchall()
@@ -63,9 +62,6 @@ def init_db() -> None:
                     conn.execute(text("ALTER TABLE users ADD COLUMN reset_token VARCHAR(255)"))
                 if user_cols and "reset_token_expires_at" not in user_cols:
                     conn.execute(text("ALTER TABLE users ADD COLUMN reset_token_expires_at DATETIME"))
-
-                # Assign orphaned diagrams (owner_id IS NULL) to demo user 'usr-juan' to prevent data loss
-                conn.execute(text("UPDATE diagrams SET owner_id = 'usr-juan' WHERE owner_id IS NULL"))
     except Exception as e:
         logger.warning(f"Database migration notice: {e}")
 
