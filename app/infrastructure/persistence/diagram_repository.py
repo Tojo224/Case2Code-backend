@@ -81,7 +81,6 @@ class SqlAlchemyDiagramRepository(DiagramRepositoryPort):
             .filter(
                 or_(
                     DiagramModel.owner_id == user_id,
-                    DiagramModel.owner_id.is_(None),
                     DiagramModel.id.in_(collab_diagram_ids),
                 )
             )

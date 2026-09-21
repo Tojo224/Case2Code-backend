@@ -15,7 +15,7 @@ from app.infrastructure.ai import ai_uml_interpreter
 from app.infrastructure.collaboration.connection_manager import connection_manager
 from app.infrastructure.persistence.diagram_repository import SqlAlchemyDiagramRepository
 from app.infrastructure.persistence.user_repository import SqlAlchemyUserRepository
-from app.presentation.routes.auth import get_current_user_optional, get_user_repo
+from app.presentation.routes.auth import get_current_user, get_current_user_optional, get_user_repo
 from app.presentation.schemas.auth_schemas import AddCollaboratorRequest
 from app.presentation.schemas.diagram_schemas import (
     AssistantPromptRequest,
@@ -100,7 +100,31 @@ def get_diagram(
 def delete_diagram(
     diagram_id: str,
     repo: SqlAlchemyDiagramRepository = Depends(get_repository),
+    user_repo: SqlAlchemyUserRepository = Depends(get_user_repo),
+    current_user: Optional[User] = Depends(get_current_user_optional),
 ):
+    document = repo.get_by_id(diagram_id)
+    if not document:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Diagram '{diagram_id}' not found.",
+        )
+
+    # Only OWNER can delete an owned diagram
+    if document.owner_id:
+        if not current_user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Inicia sesión para eliminar este proyecto.",
+            )
+        if document.owner_id != current_user.id:
+            role = user_repo.get_user_role(diagram_id, current_user.id)
+            if role != CollaboratorRole.OWNER:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Solo el propietario del diagrama puede eliminarlo.",
+                )
+
     deleted = repo.delete(diagram_id)
     if not deleted:
         raise HTTPException(
@@ -177,6 +201,8 @@ async def process_assistant_prompt(
     diagram_id: str,
     payload: AssistantPromptRequest,
     repo: SqlAlchemyDiagramRepository = Depends(get_repository),
+    user_repo: SqlAlchemyUserRepository = Depends(get_user_repo),
+    current_user: Optional[User] = Depends(get_current_user_optional),
 ):
     document = repo.get_by_id(diagram_id)
     if not document:
@@ -184,6 +210,24 @@ async def process_assistant_prompt(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Diagram '{diagram_id}' not found.",
         )
+
+    if document.owner_id:
+        if not current_user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Debes iniciar sesión para usar el asistente en este proyecto.",
+            )
+        role = user_repo.get_user_role(diagram_id, current_user.id)
+        if not role and document.owner_id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="No tienes permiso para modificar este proyecto con el asistente.",
+            )
+        if role == CollaboratorRole.VIEWER:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Los observadores (viewers) no pueden aplicar cambios con el asistente.",
+            )
 
     image_data = None
     if payload.image_base64:
@@ -218,8 +262,12 @@ async def process_assistant_prompt(
 @router.get("/{diagram_id}/collaborators", response_model=List[ProjectCollaborator])
 def get_collaborators(
     diagram_id: str,
+    repo: SqlAlchemyDiagramRepository = Depends(get_repository),
     user_repo: SqlAlchemyUserRepository = Depends(get_user_repo),
 ):
+    doc = repo.get_by_id(diagram_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail=f"Diagram '{diagram_id}' not found.")
     return user_repo.list_collaborators(diagram_id)
 
 
@@ -229,10 +277,19 @@ def add_collaborator(
     payload: AddCollaboratorRequest,
     repo: SqlAlchemyDiagramRepository = Depends(get_repository),
     user_repo: SqlAlchemyUserRepository = Depends(get_user_repo),
+    current_user: User = Depends(get_current_user),
 ):
     doc = repo.get_by_id(diagram_id)
     if not doc:
         raise HTTPException(status_code=404, detail=f"Diagram '{diagram_id}' not found.")
+
+    if doc.owner_id and doc.owner_id != current_user.id:
+        role = user_repo.get_user_role(diagram_id, current_user.id)
+        if role != CollaboratorRole.OWNER:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Solo el propietario del proyecto puede invitar colaboradores.",
+            )
 
     target_user = user_repo.get_by_email(payload.email)
     if not target_user:
@@ -249,8 +306,22 @@ def add_collaborator(
 def remove_collaborator(
     diagram_id: str,
     user_id: str,
+    repo: SqlAlchemyDiagramRepository = Depends(get_repository),
     user_repo: SqlAlchemyUserRepository = Depends(get_user_repo),
+    current_user: User = Depends(get_current_user),
 ):
+    doc = repo.get_by_id(diagram_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Diagram not found.")
+
+    if doc.owner_id and doc.owner_id != current_user.id and current_user.id != user_id:
+        role = user_repo.get_user_role(diagram_id, current_user.id)
+        if role != CollaboratorRole.OWNER:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Solo el propietario puede remover colaboradores.",
+            )
+
     removed = user_repo.remove_collaborator(diagram_id, user_id)
     if not removed:
         raise HTTPException(status_code=404, detail="Collaborator not found.")
@@ -266,12 +337,19 @@ async def diagram_websocket(
     token: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ):
+    diag_repo = SqlAlchemyDiagramRepository(db)
+    user_repo = SqlAlchemyUserRepository(db)
+
+    document = diag_repo.get_by_id(diagram_id)
+    if not document:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
     user: Optional[User] = None
     if token:
         payload = decode_access_token(token)
         if payload and "sub" in payload:
-            repo = SqlAlchemyUserRepository(db)
-            db_user = repo.get_by_id(payload["sub"])
+            db_user = user_repo.get_by_id(payload["sub"])
             if db_user:
                 user = User(
                     id=db_user.id,
@@ -280,6 +358,16 @@ async def diagram_websocket(
                     avatar_color=db_user.avatar_color,
                     created_at=db_user.created_at,
                 )
+
+    # Restrict WebSocket access on private diagrams
+    if document.owner_id:
+        if not user:
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+        role = user_repo.get_user_role(diagram_id, user.id)
+        if not role and document.owner_id != user.id:
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
 
     if not user:
         anon_id = f"guest-{uuid.uuid4().hex[:6]}"

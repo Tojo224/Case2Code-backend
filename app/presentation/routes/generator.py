@@ -1,17 +1,21 @@
 import shutil
 import tempfile
 from pathlib import Path
+from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
+from app.domain.models.user import User
 from app.infrastructure.codegen.compilation_verifier import (
     CompilationError,
     CompilationVerifier,
 )
 from app.infrastructure.codegen.spring_boot_generator import SpringBootGenerator
 from app.infrastructure.persistence.diagram_repository import SqlAlchemyDiagramRepository
+from app.infrastructure.persistence.user_repository import SqlAlchemyUserRepository
+from app.presentation.routes.auth import get_current_user_optional, get_user_repo
 
 router = APIRouter(prefix="/diagrams", tags=["Code Generator"])
 
@@ -25,6 +29,8 @@ def generate_backend(
     diagram_id: str,
     verify: bool = Query(default=False, description="Run mvnw test and mvnw package before returning"),
     repo: SqlAlchemyDiagramRepository = Depends(get_repository),
+    user_repo: SqlAlchemyUserRepository = Depends(get_user_repo),
+    current_user: Optional[User] = Depends(get_current_user_optional),
 ):
     document = repo.get_by_id(diagram_id)
     if not document:
@@ -32,6 +38,20 @@ def generate_backend(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Diagram '{diagram_id}' not found.",
         )
+
+    # Verify authorization for private projects
+    if document.owner_id:
+        if not current_user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Inicia sesión para generar código de este proyecto.",
+            )
+        role = user_repo.get_user_role(diagram_id, current_user.id)
+        if not role and document.owner_id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="No tienes permiso para acceder al código de este proyecto.",
+            )
 
     if not document.classes:
         raise HTTPException(
@@ -71,4 +91,3 @@ def generate_backend(
         media_type="application/zip",
         filename=f"{Path(zip_file).name}",
     )
-

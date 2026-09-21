@@ -43,13 +43,31 @@ def init_db() -> None:
 
     try:
         with engine.begin() as conn:
-            # Check SQLite/PostgreSQL schema for owner_id in diagrams
-            result = conn.execute(text("PRAGMA table_info(diagrams)")).fetchall()
-            col_names = [row[1] for row in result]
-            if col_names and "owner_id" not in col_names:
-                conn.execute(text("ALTER TABLE diagrams ADD COLUMN owner_id VARCHAR(64)"))
+            is_postgres = "postgresql" in str(engine.url)
+            if is_postgres:
+                conn.execute(text("ALTER TABLE diagrams ADD COLUMN IF NOT EXISTS owner_id VARCHAR(64)"))
+                conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token VARCHAR(255)"))
+                conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token_expires_at TIMESTAMP WITH TIME ZONE"))
+                conn.execute(text("UPDATE diagrams SET owner_id = 'usr-juan' WHERE owner_id IS NULL"))
+            else:
+                # Check SQLite schema for owner_id in diagrams
+                result = conn.execute(text("PRAGMA table_info(diagrams)")).fetchall()
+                col_names = [row[1] for row in result]
+                if col_names and "owner_id" not in col_names:
+                    conn.execute(text("ALTER TABLE diagrams ADD COLUMN owner_id VARCHAR(64)"))
+
+                # Check SQLite schema for reset_token and reset_token_expires_at in users
+                user_result = conn.execute(text("PRAGMA table_info(users)")).fetchall()
+                user_cols = [row[1] for row in user_result]
+                if user_cols and "reset_token" not in user_cols:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN reset_token VARCHAR(255)"))
+                if user_cols and "reset_token_expires_at" not in user_cols:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN reset_token_expires_at DATETIME"))
+
+                # Assign orphaned diagrams (owner_id IS NULL) to demo user 'usr-juan' to prevent data loss
+                conn.execute(text("UPDATE diagrams SET owner_id = 'usr-juan' WHERE owner_id IS NULL"))
     except Exception as e:
-        logger.debug(f"Migration notice: {e}")
+        logger.warning(f"Database migration notice: {e}")
 
 
 def get_db() -> Generator[Session, None, None]:

@@ -117,3 +117,21 @@ def decode_access_token(token: str) -> Optional[Dict[str, Any]]:
         return payload
     except Exception:
         return None
+
+
+def create_reset_token(email: str, expires_delta: Optional[timedelta] = None) -> str:
+    """Generate a signed reset token valid for 15 minutes by default."""
+    if not expires_delta:
+        expires_delta = timedelta(minutes=15)
+    return create_access_token({"sub": email, "type": "password_reset"}, expires_delta=expires_delta)
+
+
+def verify_reset_token(token: str) -> Optional[str]:
+    """Verify reset token and return email if valid and not expired."""
+    payload = decode_access_token(token)
+    if not payload:
+        return None
+    if payload.get("type") != "password_reset":
+        return None
+    return payload.get("sub")
+

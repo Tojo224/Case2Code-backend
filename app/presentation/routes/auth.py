@@ -1,12 +1,31 @@
+from datetime import datetime, timedelta, timezone
+import logging
 from typing import List, Optional
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.security import create_access_token, decode_access_token, hash_password, verify_password
+from app.core.security import (
+    create_access_token,
+    create_reset_token,
+    decode_access_token,
+    hash_password,
+    verify_password,
+    verify_reset_token,
+)
 from app.domain.models.user import User
 from app.infrastructure.persistence.user_repository import SqlAlchemyUserRepository
-from app.presentation.schemas.auth_schemas import AuthResponse, LoginRequest, RegisterRequest
+from app.presentation.schemas.auth_schemas import (
+    AuthResponse,
+    ForgotPasswordRequest,
+    ForgotPasswordResponse,
+    LoginRequest,
+    RegisterRequest,
+    ResetPasswordRequest,
+    ResetPasswordResponse,
+)
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -87,6 +106,7 @@ DEMO_USERS = [
 
 
 def ensure_demo_users_seeded(repo: SqlAlchemyUserRepository):
+    """Seed demo accounts only once without overwriting existing data/passwords."""
     for u in DEMO_USERS:
         existing = repo.get_by_email(u["email"])
         if not existing:
@@ -97,11 +117,6 @@ def ensure_demo_users_seeded(repo: SqlAlchemyUserRepository):
                 avatar_color=u["avatar_color"],
                 user_id=u["id"],
             )
-        else:
-            existing.name = u["name"]
-            existing.hashed_password = hash_password(u["password"])
-            existing.avatar_color = u["avatar_color"]
-            repo.db.commit()
 
 
 @router.post("/register", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
@@ -116,7 +131,6 @@ def register(
             detail="A user with this email already exists.",
         )
 
-    # Assign default colors if none provided
     color = payload.avatar_color or "#6366F1"
     user = repo.create_user(
         email=payload.email,
@@ -134,7 +148,6 @@ def login(
     payload: LoginRequest,
     repo: SqlAlchemyUserRepository = Depends(get_user_repo),
 ):
-    # Ensure demo users are present if someone logs in with a demo email
     ensure_demo_users_seeded(repo)
 
     user_model = repo.get_by_email(payload.email)
@@ -153,6 +166,53 @@ def login(
     )
     token = create_access_token({"sub": user.id, "email": user.email, "name": user.name})
     return AuthResponse(access_token=token, token_type="bearer", user=user)
+
+
+@router.post("/forgot-password", response_model=ForgotPasswordResponse)
+def forgot_password(
+    payload: ForgotPasswordRequest,
+    repo: SqlAlchemyUserRepository = Depends(get_user_repo),
+):
+    user = repo.get_by_email(payload.email)
+    msg = "Si el correo está registrado, recibirás las instrucciones para restablecer tu contraseña."
+    if not user:
+        return ForgotPasswordResponse(message=msg, dev_token=None)
+
+    now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(minutes=15)
+    token = create_reset_token(user.email, expires_delta=timedelta(minutes=15))
+    repo.set_reset_token(user.email, token, expires_at)
+
+    logger.info(f"Password reset token generated for {user.email}: {token}")
+    return ForgotPasswordResponse(
+        message=msg,
+        dev_token=token,  # Included for dev/testing ease
+    )
+
+
+@router.post("/reset-password", response_model=ResetPasswordResponse)
+def reset_password(
+    payload: ResetPasswordRequest,
+    repo: SqlAlchemyUserRepository = Depends(get_user_repo),
+):
+    email = verify_reset_token(payload.token)
+    if not email:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Token de restablecimiento inválido o expirado.",
+        )
+
+    success = repo.reset_password(payload.token, payload.new_password)
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="El token es inválido, ya fue utilizado o ha expirado.",
+        )
+
+    return ResetPasswordResponse(
+        message="Contraseña actualizada exitosamente. Ya podés iniciar sesión con tu nueva contraseña.",
+        success=True,
+    )
 
 
 @router.get("/me", response_model=User)
@@ -177,4 +237,3 @@ def get_demo_users(repo: SqlAlchemyUserRepository = Depends(get_user_repo)):
             token = create_access_token({"sub": user.id, "email": user.email, "name": user.name})
             result.append(AuthResponse(access_token=token, token_type="bearer", user=user))
     return result
-

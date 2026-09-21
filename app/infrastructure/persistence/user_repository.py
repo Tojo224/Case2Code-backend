@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 import uuid
 from typing import List, Optional
 from sqlalchemy.orm import Session
@@ -44,6 +45,40 @@ class SqlAlchemyUserRepository:
 
     def get_by_email(self, email: str) -> Optional[UserModel]:
         return self.db.query(UserModel).filter(UserModel.email == email.strip().lower()).first()
+
+    def set_reset_token(self, email: str, token: str, expires_at: datetime) -> Optional[UserModel]:
+        user = self.get_by_email(email)
+        if not user:
+            return None
+        user.reset_token = token
+        user.reset_token_expires_at = expires_at
+        self.db.commit()
+        self.db.refresh(user)
+        return user
+
+    def get_by_reset_token(self, token: str) -> Optional[UserModel]:
+        if not token:
+            return None
+        return self.db.query(UserModel).filter(UserModel.reset_token == token).first()
+
+    def reset_password(self, token: str, new_password: str) -> bool:
+        user = self.get_by_reset_token(token)
+        if not user:
+            return False
+
+        now = datetime.now(timezone.utc)
+        if user.reset_token_expires_at:
+            exp = user.reset_token_expires_at
+            if exp.tzinfo is None:
+                exp = exp.replace(tzinfo=timezone.utc)
+            if exp < now:
+                return False
+
+        user.hashed_password = hash_password(new_password)
+        user.reset_token = None
+        user.reset_token_expires_at = None
+        self.db.commit()
+        return True
 
     def list_users(self) -> List[User]:
         users = self.db.query(UserModel).all()

@@ -20,6 +20,8 @@ class UserModel(Base):
         nullable=False,
         default=lambda: datetime.now(timezone.utc),
     )
+    reset_token = Column(String(255), nullable=True, index=True)
+    reset_token_expires_at = Column(DateTime(timezone=True), nullable=True)
 
     collaborations = relationship(
         "DiagramCollaboratorModel",
