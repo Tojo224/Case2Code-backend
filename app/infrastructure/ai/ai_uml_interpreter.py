@@ -1,4 +1,6 @@
 import logging
+import re
+import unicodedata
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 from pydantic import TypeAdapter
@@ -138,12 +140,47 @@ class AiUmlInterpreter:
         )
         return self._extract_commands_and_question(res)
 
+    @staticmethod
+    def sanitize_identifier(name: str, pascal: bool = False) -> str:
+        if not name:
+            return "Entity" if pascal else "attribute"
+        nfkd = unicodedata.normalize("NFKD", str(name).strip())
+        clean = "".join([c for c in nfkd if not unicodedata.combining(c)])
+        
+        tokens = [t for t in re.split(r"[^A-Za-z0-9]+", clean) if t]
+        words = []
+        for token in tokens:
+            subwords = re.findall(r"[A-Z]?[a-z]+|[A-Z]+(?=[A-Z][a-z]|\d|\W|$)|[0-9]+", token)
+            if subwords:
+                words.extend(subwords)
+            else:
+                words.append(token)
+
+        if not words:
+            return "Entity" if pascal else "attribute"
+
+        def cap(w: str) -> str:
+            return w[0].upper() + w[1:] if len(w) > 1 else w.upper()
+
+        if pascal:
+            return "".join(cap(w) for w in words)
+        else:
+            return words[0].lower() + "".join(cap(w) for w in words[1:])
+
     def _resolve_and_validate_commands(
         self, raw_commands: List[Dict[str, Any]], initial_doc: CanonicalUmlDocument
     ) -> Tuple[List[UmlCommand], List[Tuple[str, str, str]], Optional[str]]:
         """Maps class/attribute names to IDs, resolves multi-relation collisions and validates schemas."""
         # Build lookup maps
-        name_to_class_id: Dict[str, str] = {c.name.lower(): c.id for c in initial_doc.classes}
+        name_to_class_id: Dict[str, str] = {}
+        for c in initial_doc.classes:
+            name_to_class_id[c.name.lower()] = c.id
+            name_to_class_id[c.id.lower()] = c.id
+            sanitized = self.sanitize_identifier(c.name, pascal=True).lower()
+            name_to_class_id[sanitized] = c.id
+            name_to_class_id[c.name.lower().replace(" ", "_")] = c.id
+            name_to_class_id[c.name.lower().replace(" ", "-")] = c.id
+
         id_to_class: Dict[str, Any] = {c.id: c for c in initial_doc.classes}
 
         # Multi-relation tracking for Tier-2 anti-collision: (src_id, tgt_id, type) -> count
@@ -160,30 +197,55 @@ class AiUmlInterpreter:
             if not cmd_type:
                 continue
 
-            # If CREATE_CLASS, ensure class_id is generated and record in name lookup
+            # If CREATE_CLASS, sanitize name and ensure class_id is generated and recorded in name lookup
             if cmd_type == CommandTypeEnum.CREATE_CLASS.value:
+                raw_name = str(raw.get("name", "")).strip()
+                sanitized_name = self.sanitize_identifier(raw_name, pascal=True)
+                raw["name"] = sanitized_name
                 if not raw.get("class_id"):
                     raw["class_id"] = f"cls-{uuid.uuid4().hex[:8]}"
-                class_name = raw.get("name", "")
-                if class_name:
-                    name_to_class_id[class_name.lower()] = raw["class_id"]
+                class_id = raw["class_id"]
+
+                name_to_class_id[raw_name.lower()] = class_id
+                name_to_class_id[sanitized_name.lower()] = class_id
+                name_to_class_id[raw_name.lower().replace(" ", "_")] = class_id
+                name_to_class_id[raw_name.lower().replace(" ", "-")] = class_id
+                name_to_class_id[class_id.lower()] = class_id
+
+            # If ADD_ATTRIBUTE or UPDATE_ATTRIBUTE, sanitize attribute name
+            if cmd_type in (CommandTypeEnum.ADD_ATTRIBUTE.value, CommandTypeEnum.UPDATE_ATTRIBUTE.value):
+                attr_name = raw.get("name")
+                if attr_name:
+                    raw["name"] = self.sanitize_identifier(attr_name, pascal=False)
 
             # If references class_id by class name, resolve to real ID
-            if "class_id" in raw and raw["class_id"]:
-                class_ref = str(raw["class_id"])
+            if "class_id" in raw and raw["class_id"] and cmd_type != CommandTypeEnum.CREATE_CLASS.value:
+                class_ref = str(raw["class_id"]).strip()
                 if class_ref.lower() in name_to_class_id:
                     raw["class_id"] = name_to_class_id[class_ref.lower()]
+                else:
+                    sanitized_cls = self.sanitize_identifier(class_ref, pascal=True).lower()
+                    if sanitized_cls in name_to_class_id:
+                        raw["class_id"] = name_to_class_id[sanitized_cls]
 
             # If references source_class_id or target_class_id by name, resolve
             if "source_class_id" in raw and raw["source_class_id"]:
-                src_ref = str(raw["source_class_id"])
+                src_ref = str(raw["source_class_id"]).strip()
                 if src_ref.lower() in name_to_class_id:
                     raw["source_class_id"] = name_to_class_id[src_ref.lower()]
+                else:
+                    sanitized_src = self.sanitize_identifier(src_ref, pascal=True).lower()
+                    if sanitized_src in name_to_class_id:
+                        raw["source_class_id"] = name_to_class_id[sanitized_src]
 
             if "target_class_id" in raw and raw["target_class_id"]:
-                tgt_ref = str(raw["target_class_id"])
+                tgt_ref = str(raw["target_class_id"]).strip()
                 if tgt_ref.lower() in name_to_class_id:
                     raw["target_class_id"] = name_to_class_id[tgt_ref.lower()]
+                else:
+                    sanitized_tgt = self.sanitize_identifier(tgt_ref, pascal=True).lower()
+                    if sanitized_tgt in name_to_class_id:
+                        raw["target_class_id"] = name_to_class_id[sanitized_tgt]
 
             # If references attribute_id by attribute name, resolve
             if cmd_type in [CommandTypeEnum.UPDATE_ATTRIBUTE.value, CommandTypeEnum.DELETE_ATTRIBUTE.value]:

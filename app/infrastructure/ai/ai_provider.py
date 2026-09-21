@@ -375,7 +375,7 @@ class AiProviderPort(ABC):
 class GeminiAiProvider(AiProviderPort):
     """AI provider backed by Google Gemini API via REST HTTP."""
 
-    def __init__(self, api_key: str, model: str = "gemini-3.6-flash"):
+    def __init__(self, api_key: str, model: str = "gemini-3.5-flash-lite"):
         self.api_key = api_key
         self.model = model
         self.endpoint = (
@@ -432,9 +432,10 @@ INTENTION RECOGNITION & REPLICATION (CRITICAL):
 - When an image is provided (hand-drawn sketch, whiteboard, ER diagram, database screenshot, relational schema):
   1. The user's intention is ALWAYS to extract and REPLICATE the entire database/diagram into UML classes, attributes, and relationships. Do not wait for the word 'crea'.
   2. Extract every entity box as a CREATE_CLASS with logical (x, y) coordinates preserving the visual layout (e.g. spread across x: 80..800, y: 80..600).
-  3. For every attribute listed inside the box, generate an ADD_ATTRIBUTE with appropriate Java/SQL types (Long for IDs, String for names/text, LocalDate for dates, Double for amounts, Boolean for flags). Mark primary_key: true if it has PK, #, underline, or is 'id'.
-  4. Replicate all relationship lines between entities with their cardinalities.
-  5. Multi-relationships between same pair of tables: assign distinct semantic target_roles (e.g. 'origen', 'destino' or 'rol_1', 'rol_2').
+  3. Class names MUST be valid alphanumeric PascalCase identifiers without spaces or accents (e.g., 'ProductoEspecial', 'OrdenDeTrabajo', 'PlantillaFabricacion', 'Catalogo').
+  4. For every attribute listed inside the box, generate an ADD_ATTRIBUTE with appropriate Java/SQL types (Long for IDs, String for names/text, LocalDate for dates, Double for amounts, Boolean for flags). Attribute names MUST be camelCase or snake_case without spaces (e.g., 'fechaCreacion', 'precioUnitario'). Mark primary_key: true if it has PK, #, underline, or is 'id'.
+  5. Replicate all relationship lines between entities with their cardinalities.
+  6. Multi-relationships between same pair of tables: assign distinct semantic target_roles (e.g. 'origen', 'destino' or 'rol_1', 'rol_2').
 
 CLARIFICATION RULE ("SI NO SABES, PREGUNTA"):
 - If the image or text is completely ambiguous, blurry, cut off, or key information is missing to make a correct decision:
@@ -509,14 +510,19 @@ Do not output markdown codeblocks, explanations outside JSON, or any extra text.
             if parts_resp:
                 text_content = parts_resp[0].get("text", "").strip()
 
-        # Clean any wrapping markdown if present
-        if text_content.startswith("```"):
-            text_content = re.sub(r"^```(?:json)?\n?", "", text_content)
-            text_content = re.sub(r"\n?```$", "", text_content).strip()
+        # Robust extraction of JSON from markdown blocks or surrounding prose
+        text_content = text_content.strip()
+        code_block_match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text_content)
+        if code_block_match:
+            candidate_json = code_block_match.group(1).strip()
+        else:
+            json_structure_match = re.search(r"(\{[\s\S]*\}|\[[\s\S]*\])", text_content)
+            candidate_json = json_structure_match.group(1).strip() if json_structure_match else text_content
 
         try:
-            parsed = json.loads(text_content)
-        except Exception:
+            parsed = json.loads(candidate_json)
+        except Exception as e:
+            logger.warning(f"Failed to parse model JSON: {e}. Raw content: {text_content[:300]}")
             return {"commands": [], "question": "No pude procesar la respuesta del modelo como JSON estructurado."}
 
         if isinstance(parsed, dict):

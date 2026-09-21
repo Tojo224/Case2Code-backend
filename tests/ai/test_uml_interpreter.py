@@ -346,4 +346,74 @@ async def test_clarification_question_when_unknown_or_ambiguous(sample_document)
     # Must ask a clarification question in Spanish
     assert "¿Qué base de datos o modelo te gustaría crear?" in reply
 
+@pytest.mark.asyncio
+async def test_sanitize_identifier_utility():
+    # Classes (PascalCase)
+    assert AiUmlInterpreter.sanitize_identifier("Producto Especial", pascal=True) == "ProductoEspecial"
+    assert AiUmlInterpreter.sanitize_identifier("Plantilla de Fabricación", pascal=True) == "PlantillaDeFabricacion"
+    assert AiUmlInterpreter.sanitize_identifier("OrdenDeTrabajo", pascal=True) == "OrdenDeTrabajo"
+    assert AiUmlInterpreter.sanitize_identifier("catálogo", pascal=True) == "Catalogo"
 
+    # Attributes (camelCase)
+    assert AiUmlInterpreter.sanitize_identifier("fecha de creación", pascal=False) == "fechaDeCreacion"
+    assert AiUmlInterpreter.sanitize_identifier("id_cliente", pascal=False) == "idCliente"
+    assert AiUmlInterpreter.sanitize_identifier("precioUnitario", pascal=False) == "precioUnitario"
+
+
+@pytest.mark.asyncio
+async def test_resolve_and_validate_with_spaced_names(sample_document):
+    """Verifies that entity names with spaces and accents are sanitized and relationships resolve properly."""
+    raw_commands = [
+        {
+            "command_type": "CREATE_CLASS",
+            "class_id": "cls-prod-esp",
+            "name": "Producto Especial",
+            "position": {"x": 100, "y": 100},
+        },
+        {
+            "command_type": "CREATE_CLASS",
+            "class_id": "cls-plantilla-fab",
+            "name": "Plantilla de Fabricación",
+            "position": {"x": 300, "y": 100},
+        },
+        {
+            "command_type": "ADD_ATTRIBUTE",
+            "class_id": "cls-prod-esp",
+            "name": "fecha de creación",
+            "type": "LocalDate",
+        },
+        {
+            "command_type": "CREATE_RELATIONSHIP",
+            "relationship_id": "rel-test-1",
+            "type": "ONE_TO_ONE",
+            "source_class_id": "Producto Especial",
+            "target_class_id": "Plantilla de Fabricación",
+            "source_cardinality": "1",
+            "target_cardinality": "1",
+            "target_role": "tiene plantilla",
+        },
+    ]
+
+    mock_provider = AsyncMock(spec=AiProviderPort)
+    mock_provider.generate_commands.return_value = {"commands": raw_commands, "question": None}
+
+    interpreter = AiUmlInterpreter(provider=mock_provider)
+    doc, executed_cmds, reply = await interpreter.interpret_and_execute(
+        "Crea las clases y relación", sample_document
+    )
+
+    assert len(executed_cmds) == 4
+    class_names = {c.name for c in doc.classes}
+    assert "ProductoEspecial" in class_names
+    assert "PlantillaDeFabricacion" in class_names
+
+    prod_esp = next(c for c in doc.classes if c.name == "ProductoEspecial")
+    attr_names = {a.name for a in prod_esp.attributes}
+    assert "fechaDeCreacion" in attr_names
+
+    # Verify relationship was created and linked to the sanitized IDs
+    rel = next((r for r in doc.relationships if r.id == "rel-test-1"), None)
+    assert rel is not None
+    assert rel.source_class_id == prod_esp.id
+    plantilla = next(c for c in doc.classes if c.name == "PlantillaDeFabricacion")
+    assert rel.target_class_id == plantilla.id
