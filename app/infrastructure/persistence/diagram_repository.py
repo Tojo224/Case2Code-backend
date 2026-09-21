@@ -57,6 +57,20 @@ class SqlAlchemyDiagramRepository(DiagramRepositoryPort):
             result.append(doc)
         return result
 
+    def list_public(self) -> List[CanonicalUmlDocument]:
+        records = (
+            self.db.query(DiagramModel)
+            .filter(DiagramModel.owner_id.is_(None))
+            .order_by(DiagramModel.updated_at.desc())
+            .all()
+        )
+        result = []
+        for r in records:
+            doc = CanonicalUmlDocument.model_validate(r.data)
+            doc.owner_id = r.owner_id
+            result.append(doc)
+        return result
+
     def list_for_user(self, user_id: str) -> List[CanonicalUmlDocument]:
         collab_diagram_ids = (
             select(DiagramCollaboratorModel.diagram_id)

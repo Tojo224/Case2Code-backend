@@ -65,13 +65,15 @@ def list_diagrams(
 ):
     if current_user:
         return repo.list_for_user(current_user.id)
-    return repo.list_all()
+    return repo.list_public()
 
 
 @router.get("/{diagram_id}", response_model=CanonicalUmlDocument)
 def get_diagram(
     diagram_id: str,
     repo: SqlAlchemyDiagramRepository = Depends(get_repository),
+    user_repo: SqlAlchemyUserRepository = Depends(get_user_repo),
+    current_user: Optional[User] = Depends(get_current_user_optional),
 ):
     document = repo.get_by_id(diagram_id)
     if not document:
@@ -79,6 +81,18 @@ def get_diagram(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Diagram '{diagram_id}' not found.",
         )
+    if document.owner_id:
+        if not current_user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Inicia sesión para acceder a este proyecto.",
+            )
+        role = user_repo.get_user_role(diagram_id, current_user.id)
+        if not role and document.owner_id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="No tienes permiso para acceder a este proyecto.",
+            )
     return document
 
 
@@ -101,6 +115,8 @@ async def execute_command(
     diagram_id: str,
     payload: ExecuteCommandRequest,
     repo: SqlAlchemyDiagramRepository = Depends(get_repository),
+    user_repo: SqlAlchemyUserRepository = Depends(get_user_repo),
+    current_user: Optional[User] = Depends(get_current_user_optional),
 ):
     document = repo.get_by_id(diagram_id)
     if not document:
@@ -108,6 +124,24 @@ async def execute_command(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Diagram '{diagram_id}' not found.",
         )
+
+    if document.owner_id:
+        if not current_user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication required to modify this diagram.",
+            )
+        role = user_repo.get_user_role(diagram_id, current_user.id)
+        if not role and document.owner_id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have permission to modify this diagram.",
+            )
+        if role == CollaboratorRole.VIEWER:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Viewers cannot make changes to this diagram.",
+            )
 
     try:
         updated_doc = command_bus.dispatch(document, payload.command)
