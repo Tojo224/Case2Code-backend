@@ -22,7 +22,9 @@ class CommandExecutionResponse(BaseModel):
 
 
 class AssistantPromptRequest(BaseModel):
-    prompt: str = Field(..., min_length=1)
+    prompt: Optional[str] = "Replicar este diseño en el diagrama."
+    image_base64: Optional[str] = None
+    image_mime_type: Optional[str] = "image/png"
 
 
 class AssistantPromptResponse(BaseModel):

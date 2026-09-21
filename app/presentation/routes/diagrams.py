@@ -185,8 +185,16 @@ async def process_assistant_prompt(
             detail=f"Diagram '{diagram_id}' not found.",
         )
 
+    image_data = None
+    if payload.image_base64:
+        image_data = {
+            "data": payload.image_base64,
+            "mime_type": payload.image_mime_type or "image/png",
+        }
+
+    prompt_text = payload.prompt or "Replicar este diseño de base de datos en el diagrama."
     updated_doc, executed_commands, reply = await ai_uml_interpreter.interpret_and_execute(
-        payload.prompt, document
+        prompt_text, document, image_data=image_data
     )
     if executed_commands:
         repo.save(updated_doc)

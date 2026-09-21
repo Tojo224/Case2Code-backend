@@ -10,7 +10,7 @@ from app.domain.models.canonical_uml import (
     UmlRelationship,
 )
 from app.domain.models.commands import CommandTypeEnum
-from app.infrastructure.ai.ai_provider import GeminiAiProvider, RuleBasedAiProvider
+from app.infrastructure.ai.ai_provider import AiProviderPort, GeminiAiProvider, RuleBasedAiProvider
 from app.infrastructure.ai.ai_uml_interpreter import AiUmlInterpreter
 from app.main import app
 
@@ -215,4 +215,54 @@ def test_assistant_api_endpoint():
     assert data2["success"] is True
     vehiculo = next(c for c in data2["document"]["classes"] if c["name"] == "Vehiculo")
     assert any(a["name"] == "modelo" for a in vehiculo["attributes"])
+
+
+@pytest.mark.asyncio
+async def test_multi_relationship_role_auto_resolution(sample_document):
+    """Verifies that when AI replicates a sketch with multiple relationships between the same two tables
+    without specifying roles, the interpreter automatically resolves distinct roles without collision.
+    """
+    class MockSketchProvider(AiProviderPort):
+        async def generate_commands(self, prompt, current_uml, image_data=None):
+            return [
+                {
+                    "command_type": "CREATE_RELATIONSHIP",
+                    "source_class_id": "cls-cliente-1",
+                    "target_class_id": "cls-reserva-2",
+                    "type": "ONE_TO_MANY",
+                    "source_cardinality": "1",
+                    "target_cardinality": "*",
+                },
+                {
+                    "command_type": "CREATE_RELATIONSHIP",
+                    "source_class_id": "cls-cliente-1",
+                    "target_class_id": "cls-reserva-2",
+                    "type": "ONE_TO_MANY",
+                    "source_cardinality": "1",
+                    "target_cardinality": "*",
+                },
+                {
+                    "command_type": "CREATE_RELATIONSHIP",
+                    "source_class_id": "cls-cliente-1",
+                    "target_class_id": "cls-reserva-2",
+                    "type": "ONE_TO_MANY",
+                    "source_cardinality": "1",
+                    "target_cardinality": "*",
+                },
+            ]
+
+    interpreter = AiUmlInterpreter(provider=MockSketchProvider())
+    doc, cmds, reply = await interpreter.interpret_and_execute(
+        "Replicar boceto con 3 relaciones entre Cliente y Reserva", sample_document
+    )
+
+    assert len(cmds) == 3
+    assert len(doc.relationships) == 3
+    # Check that all 3 have distinct roles so there is zero collision in SQL/JPA
+    roles = [r.target_role for r in doc.relationships]
+    assert len(set(roles)) == 3
+    assert "rol_2" in roles
+    assert "rol_3" in roles
+    assert "Roles asignados" in reply
+
 

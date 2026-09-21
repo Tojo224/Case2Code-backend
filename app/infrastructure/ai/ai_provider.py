@@ -14,13 +14,16 @@ logger = logging.getLogger(__name__)
 
 
 class AiProviderPort(ABC):
-    """Port for AI / LLM providers converting natural language to UML commands."""
+    """Port for AI / LLM providers converting natural language and diagrams to UML commands."""
 
     @abstractmethod
     async def generate_commands(
-        self, prompt: str, current_uml: CanonicalUmlDocument
+        self,
+        prompt: str,
+        current_uml: CanonicalUmlDocument,
+        image_data: Optional[Dict[str, str]] = None,
     ) -> List[Dict[str, Any]]:
-        """Takes a user prompt and current diagram state, returns a list of raw command dicts."""
+        """Takes a user prompt, current diagram state and optional image data, returns raw command dicts."""
         pass
 
 
@@ -55,8 +58,8 @@ class GeminiAiProvider(AiProviderPort):
             for r in current_uml.relationships
         ]
 
-        return f"""You are an expert Software Architect assisting with CASE UML class diagrams.
-Translate the user's natural language instruction into a JSON array of strongly-typed UML commands.
+        return f"""You are an expert Software Architect assisting with CASE UML and Relational Database diagrams.
+Translate the user's natural language instruction and/or conceptual database design image into a JSON array of strongly-typed UML commands.
 
 Current diagram state:
 - Existing Classes: {json.dumps(classes_summary)}
@@ -76,9 +79,20 @@ Allowed Command Types and schemas:
 6. DELETE_ATTRIBUTE:
    {{"command_type": "DELETE_ATTRIBUTE", "class_id": "cls-id-or-name", "attribute_id": "attr-id-or-name"}}
 7. CREATE_RELATIONSHIP:
-   {{"command_type": "CREATE_RELATIONSHIP", "relationship_id": "rel-uuid", "type": "ONE_TO_MANY|MANY_TO_ONE|ONE_TO_ONE|MANY_TO_MANY|INHERITANCE|AGGREGATION|COMPOSITION|REALIZATION|DEPENDENCY", "source_class_id": "cls-source-id-or-name", "target_class_id": "cls-target-id-or-name", "source_cardinality": "1", "target_cardinality": "*"}}
+   {{"command_type": "CREATE_RELATIONSHIP", "relationship_id": "rel-uuid", "type": "ONE_TO_MANY|MANY_TO_ONE|ONE_TO_ONE|MANY_TO_MANY|INHERITANCE|AGGREGATION|COMPOSITION|REALIZATION|DEPENDENCY", "source_class_id": "cls-source-id-or-name", "target_class_id": "cls-target-id-or-name", "source_cardinality": "1", "target_cardinality": "*", "source_role": "rol_origen", "target_role": "rol_destino"}}
 8. DELETE_RELATIONSHIP:
    {{"command_type": "DELETE_RELATIONSHIP", "relationship_id": "rel-id"}}
+
+IMAGE REPLICATION & ROLE RULES (CRITICAL):
+- When an image is provided (hand-drawn sketch, whiteboard, ER diagram or screenshot):
+  1. Extract every entity box as a CREATE_CLASS with logical (x, y) coordinates preserving the visual layout (e.g. spread across x: 100..800, y: 100..600).
+  2. For every attribute listed inside the box, generate an ADD_ATTRIBUTE with appropriate Java/SQL types (Long for IDs, String for names/text, LocalDate for dates, Double for amounts, Boolean for flags). Mark primary_key: true if it has PK, #, underline, or is 'id'.
+  3. Replicate all relationship lines between entities.
+  4. CRITICAL RULE FOR MULTIPLE RELATIONSHIPS WITHOUT ROLES:
+     When two or more relationship lines exist between the same pair of tables (e.g., Table A and Table B) and the drawing does NOT explicitly specify role names:
+     - Deduce distinct, meaningful semantic roles based on the business domain and table context (e.g. for Ciudad and Vuelo: "origen" and "destino"; for Usuario and Documento: "creador", "revisor", "firmante").
+     - If the context is generic or unclear, assign sequential roles: "rol_1", "rol_2", "rol_3".
+     - NEVER leave duplicate empty roles for multiple relationships between the same pair of tables! Each relationship must have a unique target_role.
 
 STRICT RULES:
 - Output MUST be a valid JSON array of objects only.
@@ -87,14 +101,28 @@ STRICT RULES:
 """
 
     async def generate_commands(
-        self, prompt: str, current_uml: CanonicalUmlDocument
+        self,
+        prompt: str,
+        current_uml: CanonicalUmlDocument,
+        image_data: Optional[Dict[str, str]] = None,
     ) -> List[Dict[str, Any]]:
         system_instruction = self._build_system_prompt(current_uml)
+        parts: List[Dict[str, Any]] = [
+            {"text": f"{system_instruction}\n\nUser request: {prompt}"}
+        ]
+        if image_data and image_data.get("data"):
+            parts.append({
+                "inline_data": {
+                    "mime_type": image_data.get("mime_type", "image/png"),
+                    "data": image_data["data"],
+                }
+            })
+
         payload = {
             "contents": [
                 {
                     "role": "user",
-                    "parts": [{"text": f"{system_instruction}\n\nUser request: {prompt}"}],
+                    "parts": parts,
                 }
             ],
             "generationConfig": {
@@ -103,7 +131,7 @@ STRICT RULES:
             },
         }
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=45.0) as client:
             response = await client.post(self.endpoint, json=payload)
             response.raise_for_status()
             data = response.json()
@@ -111,9 +139,9 @@ STRICT RULES:
         text_content = ""
         candidates = data.get("candidates", [])
         if candidates and "content" in candidates[0]:
-            parts = candidates[0]["content"].get("parts", [])
-            if parts:
-                text_content = parts[0].get("text", "").strip()
+            parts_resp = candidates[0]["content"].get("parts", [])
+            if parts_resp:
+                text_content = parts_resp[0].get("text", "").strip()
 
         # Clean any wrapping markdown if present
         if text_content.startswith("```"):
@@ -137,7 +165,10 @@ class RuleBasedAiProvider(AiProviderPort):
     """
 
     async def generate_commands(
-        self, prompt: str, current_uml: CanonicalUmlDocument
+        self,
+        prompt: str,
+        current_uml: CanonicalUmlDocument,
+        image_data: Optional[Dict[str, str]] = None,
     ) -> List[Dict[str, Any]]:
         commands: List[Dict[str, Any]] = []
         normalized_prompt = prompt.strip()

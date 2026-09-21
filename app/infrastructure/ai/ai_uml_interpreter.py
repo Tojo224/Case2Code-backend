@@ -36,26 +36,27 @@ class AiUmlInterpreter:
             self.primary_provider = self.rule_based_provider
 
     async def interpret_and_execute(
-        self, prompt: str, document: CanonicalUmlDocument
+        self,
+        prompt: str,
+        document: CanonicalUmlDocument,
+        image_data: Optional[Dict[str, str]] = None,
     ) -> Tuple[CanonicalUmlDocument, List[UmlCommand], str]:
-        """Translates natural language prompt to commands and executes them on the document.
+        """Translates natural language prompt and/or image to commands and executes them on the document.
         Returns:
             (updated_document, executed_commands, assistant_reply)
         """
-        raw_commands = await self._generate_raw_commands(prompt, document)
+        raw_commands = await self._generate_raw_commands(prompt, document, image_data)
         if not raw_commands:
             return (
                 document,
                 [],
-                "No pude identificar cambios específicos para el diagrama. "
-                "Puedes pedirme cosas como:\n"
-                "- 'Crea la clase Cliente con atributos id de tipo Long y nombre de tipo String'\n"
-                "- 'Agrega el atributo telefono a Cliente'\n"
-                "- 'Relaciona Cliente con Reserva de uno a muchos'\n"
-                "- 'Elimina la clase Factura'",
+                "No pude identificar entidades ni relaciones en el mensaje o imagen. "
+                "Puedes adjuntar un boceto dibujado a mano o pedirme:\n"
+                "- 'Crea la clase Cliente con id y nombre'\n"
+                "- 'Crea la clase Pedido y relaciónala 1 a N con Cliente'",
             )
 
-        resolved_commands, validation_error = self._resolve_and_validate_commands(
+        resolved_commands, auto_roles, validation_error = self._resolve_and_validate_commands(
             raw_commands, document
         )
         if validation_error:
@@ -86,32 +87,46 @@ class AiUmlInterpreter:
                     f"Error interno al aplicar el comando: {str(e)}",
                 )
 
-        reply = self._build_natural_reply(executed_commands)
+        reply = self._build_natural_reply(executed_commands, auto_roles)
         return current_doc, executed_commands, reply
 
     async def _generate_raw_commands(
-        self, prompt: str, document: CanonicalUmlDocument
+        self,
+        prompt: str,
+        document: CanonicalUmlDocument,
+        image_data: Optional[Dict[str, str]] = None,
     ) -> List[Dict[str, Any]]:
         # First try primary provider (Gemini if key is present)
         if self.primary_provider != self.rule_based_provider:
             try:
-                raw_cmds = await self.primary_provider.generate_commands(prompt, document)
+                raw_cmds = await self.primary_provider.generate_commands(
+                    prompt, document, image_data=image_data
+                )
                 if raw_cmds:
                     return raw_cmds
             except Exception as e:
                 logger.warning(f"Primary AI provider failed, falling back to rule-based: {e}")
 
         # Fallback to deterministic rule-based
-        return await self.rule_based_provider.generate_commands(prompt, document)
+        return await self.rule_based_provider.generate_commands(
+            prompt, document, image_data=image_data
+        )
 
     def _resolve_and_validate_commands(
         self, raw_commands: List[Dict[str, Any]], initial_doc: CanonicalUmlDocument
-    ) -> Tuple[List[UmlCommand], Optional[str]]:
-        """Maps class/attribute names to IDs and validates types against Pydantic models."""
+    ) -> Tuple[List[UmlCommand], List[Tuple[str, str, str]], Optional[str]]:
+        """Maps class/attribute names to IDs, resolves multi-relation collisions and validates schemas."""
         # Build lookup maps
         name_to_class_id: Dict[str, str] = {c.name.lower(): c.id for c in initial_doc.classes}
         id_to_class: Dict[str, Any] = {c.id: c for c in initial_doc.classes}
 
+        # Multi-relation tracking for Tier-2 anti-collision: (src_id, tgt_id, type) -> count
+        rel_key_count: Dict[Tuple[str, str, str], int] = {}
+        for r in initial_doc.relationships:
+            k = (r.source_class_id, r.target_class_id, r.type.value)
+            rel_key_count[k] = rel_key_count.get(k, 0) + 1
+
+        auto_resolved_roles: List[Tuple[str, str, str]] = []
         validated_commands: List[UmlCommand] = []
 
         for raw in raw_commands:
@@ -155,16 +170,39 @@ class AiUmlInterpreter:
                             raw["attribute_id"] = a.id
                             break
 
+            # If CREATE_RELATIONSHIP, check multi-relation collision
+            if cmd_type == CommandTypeEnum.CREATE_RELATIONSHIP.value:
+                src = raw.get("source_class_id")
+                tgt = raw.get("target_class_id")
+                rtype = raw.get("type", "ONE_TO_MANY")
+                if src and tgt:
+                    k = (str(src), str(tgt), str(rtype))
+                    count = rel_key_count.get(k, 0)
+                    target_role = raw.get("target_role")
+                    if count > 0:
+                        # Auto-assign disambiguated role if missing or empty
+                        if not target_role or not str(target_role).strip():
+                            new_role = f"rol_{count + 1}"
+                            raw["target_role"] = new_role
+                            src_name = next((c.name for c in initial_doc.classes if c.id == src), str(src))
+                            tgt_name = next((c.name for c in initial_doc.classes if c.id == tgt), str(tgt))
+                            auto_resolved_roles.append((src_name, tgt_name, new_role))
+                    rel_key_count[k] = count + 1
+
             try:
                 cmd_obj = command_adapter.validate_python(raw)
                 validated_commands.append(cmd_obj)
             except Exception as e:
                 logger.error(f"Failed to validate command {raw}: {e}")
-                return [], f"Comando inválido ({cmd_type}): {str(e)}"
+                return [], [], f"Comando inválido ({cmd_type}): {str(e)}"
 
-        return validated_commands, None
+        return validated_commands, auto_resolved_roles, None
 
-    def _build_natural_reply(self, executed_commands: List[UmlCommand]) -> str:
+    def _build_natural_reply(
+        self,
+        executed_commands: List[UmlCommand],
+        auto_roles: Optional[List[Tuple[str, str, str]]] = None,
+    ) -> str:
         if not executed_commands:
             return "No se ejecutó ningún comando."
 
@@ -182,11 +220,15 @@ class AiUmlInterpreter:
             elif cmd.command_type == CommandTypeEnum.DELETE_ATTRIBUTE:
                 actions.append("Se eliminó un atributo")
             elif cmd.command_type == CommandTypeEnum.CREATE_RELATIONSHIP:
-                actions.append(f"Se creó una relación {cmd.type.value} ({cmd.source_cardinality} : {cmd.target_cardinality})")
+                role_info = f" [rol: {cmd.target_role}]" if cmd.target_role else ""
+                actions.append(f"Se creó una relación {cmd.type.value}{role_info} ({cmd.source_cardinality} : {cmd.target_cardinality})")
             elif cmd.command_type == CommandTypeEnum.DELETE_RELATIONSHIP:
                 actions.append("Se eliminó una relación")
 
         summary = "; ".join(actions) + "."
+        if auto_roles:
+            notes = [f"{s} ↔ {t} ('{r}')" for s, t, r in auto_roles]
+            summary += f"\n\n💡 **Roles asignados:** Detecté relaciones múltiples entre las mismas tablas sin rol en el boceto. Asigné nombres de rol para la base de datos: {', '.join(notes)}. Podés renombrarlos con doble clic en cada flecha."
         return f"¡Listo! {summary}"
 
 
