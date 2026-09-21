@@ -97,3 +97,33 @@ def test_prevent_circular_and_self_inheritance():
             ),
         )
 
+
+def test_self_referencing_recursive_relationship():
+    doc = CanonicalUmlDocument(
+        id="doc-self",
+        name="SelfRefDoc",
+        classes=[
+            UmlClass(id="c1", name="Empleado"),
+        ],
+    )
+
+    # Empleado references Empleado (recursive 1:N)
+    cmd_self = CreateRelationshipCommand(
+        type=RelationshipTypeEnum.ONE_TO_MANY,
+        source_class_id="c1",
+        target_class_id="c1",
+        source_handle="right-source",
+        target_handle="bottom-target",
+        source_cardinality="1",
+        target_cardinality="*",
+        source_role="subordinados",
+        target_role="supervisor",
+    )
+    doc = command_bus.dispatch(doc, cmd_self)
+    assert len(doc.relationships) == 1
+    rel = doc.relationships[0]
+    assert rel.source_class_id == "c1"
+    assert rel.target_class_id == "c1"
+    assert rel.source_role == "subordinados"
+    assert rel.target_role == "supervisor"
+

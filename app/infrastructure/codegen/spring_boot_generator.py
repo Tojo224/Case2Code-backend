@@ -297,10 +297,12 @@ class SpringBootGenerator(CodeGeneratorPort):
                 # Documented dependency
                 pass
 
-            elif rel.type == RelationshipTypeEnum.COMPOSITION:
+            is_self = (src.id == tgt.id)
+
+            if rel.type == RelationshipTypeEnum.COMPOSITION:
                 # Strong whole-part with cascade delete and orphan removal
-                field_src = rel.source_role or to_plural(tgt_name)
-                field_tgt = rel.target_role or to_snake_case(src_name)
+                field_src = rel.source_role or (f"sub_{to_plural(tgt_name)}" if is_self else to_plural(tgt_name))
+                field_tgt = rel.target_role or (f"parent_{to_snake_case(src_name)}" if is_self else to_snake_case(src_name))
                 is_to_one = rel.target_cardinality == "1"
 
                 if is_to_one:
@@ -345,8 +347,8 @@ class SpringBootGenerator(CodeGeneratorPort):
 
             elif rel.type == RelationshipTypeEnum.AGGREGATION:
                 # Shared whole-part without cascade delete
-                field_src = rel.source_role or to_plural(tgt_name)
-                field_tgt = rel.target_role or to_snake_case(src_name)
+                field_src = rel.source_role or (f"sub_{to_plural(tgt_name)}" if is_self else to_plural(tgt_name))
+                field_tgt = rel.target_role or (f"parent_{to_snake_case(src_name)}" if is_self else to_snake_case(src_name))
 
                 rel_map[src.id].append({
                     "field_name": field_src,
@@ -369,8 +371,8 @@ class SpringBootGenerator(CodeGeneratorPort):
 
             elif rel.type == RelationshipTypeEnum.ONE_TO_MANY:
                 # Source (Parent) has collection of Target
-                field_src = rel.source_role or to_plural(tgt_name)
-                field_tgt = rel.target_role or to_snake_case(src_name)
+                field_src = rel.source_role or (f"sub_{to_plural(tgt_name)}" if is_self else to_plural(tgt_name))
+                field_tgt = rel.target_role or (f"parent_{to_snake_case(src_name)}" if is_self else to_snake_case(src_name))
 
                 rel_map[src.id].append({
                     "field_name": field_src,
@@ -392,8 +394,8 @@ class SpringBootGenerator(CodeGeneratorPort):
                 })
 
             elif rel.type == RelationshipTypeEnum.MANY_TO_ONE:
-                field_src = rel.source_role or to_snake_case(tgt_name)
-                field_tgt = rel.target_role or to_plural(src_name)
+                field_src = rel.source_role or (f"parent_{to_snake_case(tgt_name)}" if is_self else to_snake_case(tgt_name))
+                field_tgt = rel.target_role or (f"sub_{to_plural(src_name)}" if is_self else to_plural(src_name))
 
                 rel_map[src.id].append({
                     "field_name": field_src,
@@ -414,8 +416,8 @@ class SpringBootGenerator(CodeGeneratorPort):
                 })
 
             elif rel.type == RelationshipTypeEnum.ONE_TO_ONE:
-                field_src = rel.source_role or to_snake_case(tgt_name)
-                field_tgt = rel.target_role or to_snake_case(src_name)
+                field_src = rel.source_role or (f"related_{to_snake_case(tgt_name)}" if is_self else to_snake_case(tgt_name))
+                field_tgt = rel.target_role or (f"original_{to_snake_case(src_name)}" if is_self else to_snake_case(src_name))
 
                 rel_map[src.id].append({
                     "field_name": field_src,
