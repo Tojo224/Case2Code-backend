@@ -429,6 +429,7 @@ Allowed Command Types and schemas:
    {{"command_type": "DELETE_RELATIONSHIP", "relationship_id": "rel-id"}}
 
 - FULL DOMAIN CREATION: When the user asks for a complete domain or business database (e.g., 'base de datos para una veterinaria', 'e-commerce', 'sistema escolar'), generate ALL core entities, attributes (with primary keys), and relationships needed for a comprehensive, functional schema (typically 5-8 entities). Do not return an incomplete single-class model.
+- MANY-TO-MANY ASSOCIATIVE ENTITIES: When a Many-to-Many relationship exists or is requested between two entities (e.g., Mascota <-> Vacuna, Pedido <-> Producto, Estudiante <-> Curso), ALWAYS generate the explicit intermediate associative class (CREATE_CLASS) representing the junction table (e.g. MascotaVacuna with fechaAplicacion, dosis; DetallePedido with cantidad, precioUnitario; InscripcionCurso with fechaInscripcion), and connect it via ONE_TO_MANY / MANY_TO_ONE relationships from the two primary entities to the intermediate entity.
 - When an image is provided (hand-drawn sketch, whiteboard, ER diagram, database screenshot, relational schema):
   1. The user's intention is ALWAYS to extract and REPLICATE the entire database/diagram into UML classes, attributes, and relationships. Do not wait for the word 'crea'.
   2. Extract every entity box as a CREATE_CLASS with logical (x, y) coordinates preserving the visual layout (e.g. spread across x: 80..800, y: 80..600).
@@ -481,7 +482,7 @@ Do not output markdown codeblocks, explanations outside JSON, or any extra text.
             "generationConfig": {
                 "temperature": 0.1,
                 "responseMimeType": "application/json",
-                "maxOutputTokens": 8192,
+                "maxOutputTokens": 16384,
             },
         }
 
