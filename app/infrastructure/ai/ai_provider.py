@@ -35,7 +35,152 @@ class DatabaseSchemaParser:
         if table_list_cmds:
             return table_list_cmds
 
+        # 4. Check for domain presets (veterinaria, hotel, ecommerce, universidad, biblioteca, etc.)
+        domain_cmds = cls._parse_domain_presets(text, current_uml)
+        if domain_cmds:
+            return domain_cmds
+
         return []
+
+    @classmethod
+    def _parse_domain_presets(cls, text: str, current_uml: CanonicalUmlDocument) -> List[Dict[str, Any]]:
+        norm = text.lower().strip()
+        domain_intent = re.search(
+            r"(?:(?:crea(?:r)?|nueva|dise[ñn]a(?:r)?|genera(?:r)?)\s+(?:una\s+)?(?:base\s+de\s+datos|sistema|modelo|esquema)\s+(?:de\s+|para\s+(?:una?\s+)?|en\s+)|(?:base\s+de\s+datos|sistema|modelo)\s+(?:de\s+|para\s+(?:una?\s+)?))([a-z0-9_\s-]+)",
+            norm,
+        )
+        if not domain_intent:
+            return []
+
+        topic = domain_intent.group(1).strip()
+
+        # 1. Veterinaria
+        if any(w in topic for w in ["veterinaria", "mascota", "animal"]):
+            return cls._build_preset_commands([
+                ("Cliente", [("nombre", "String"), ("telefono", "String"), ("email", "String")]),
+                ("Mascota", [("nombre", "String"), ("especie", "String"), ("raza", "String"), ("fechaNacimiento", "LocalDate")]),
+                ("Veterinario", [("nombre", "String"), ("especialidad", "String"), ("matricula", "String")]),
+                ("Cita", [("fechaHora", "LocalDateTime"), ("motivo", "String"), ("estado", "String")]),
+                ("Tratamiento", [("descripcion", "String"), ("costo", "Double")]),
+                ("Vacuna", [("nombre", "String"), ("laboratorio", "String")]),
+                ("MascotaVacuna", [("fechaAplicacion", "LocalDate"), ("dosis", "String")]),
+            ], [
+                ("Cliente", "Mascota", RelationshipTypeEnum.ONE_TO_MANY, "1", "*"),
+                ("Mascota", "Cita", RelationshipTypeEnum.ONE_TO_MANY, "1", "*"),
+                ("Veterinario", "Cita", RelationshipTypeEnum.ONE_TO_MANY, "1", "*"),
+                ("Cita", "Tratamiento", RelationshipTypeEnum.ONE_TO_MANY, "1", "*"),
+                ("Mascota", "MascotaVacuna", RelationshipTypeEnum.ONE_TO_MANY, "1", "*"),
+                ("Vacuna", "MascotaVacuna", RelationshipTypeEnum.ONE_TO_MANY, "1", "*"),
+            ], current_uml)
+
+        # 2. Hotel
+        if any(w in topic for w in ["hotel", "hospedaje", "alojamiento"]):
+            return cls._build_preset_commands([
+                ("Huesped", [("nombre", "String"), ("documento", "String"), ("telefono", "String"), ("email", "String")]),
+                ("Habitacion", [("numero", "String"), ("piso", "Integer"), ("precioNoche", "Double")]),
+                ("TipoHabitacion", [("nombre", "String"), ("capacidad", "Integer"), ("descripcion", "String")]),
+                ("Reserva", [("fechaIngreso", "LocalDate"), ("fechaSalida", "LocalDate"), ("estado", "String"), ("total", "Double")]),
+                ("Pago", [("monto", "Double"), ("fechaPago", "LocalDateTime"), ("metodoPago", "String")]),
+            ], [
+                ("TipoHabitacion", "Habitacion", RelationshipTypeEnum.ONE_TO_MANY, "1", "*"),
+                ("Huesped", "Reserva", RelationshipTypeEnum.ONE_TO_MANY, "1", "*"),
+                ("Habitacion", "Reserva", RelationshipTypeEnum.ONE_TO_MANY, "1", "*"),
+                ("Reserva", "Pago", RelationshipTypeEnum.ONE_TO_MANY, "1", "*"),
+            ], current_uml)
+
+        # 3. E-commerce / Tienda
+        if any(w in topic for w in ["tienda", "ecommerce", "e-commerce", "compras", "ventas", "pedido"]):
+            return cls._build_preset_commands([
+                ("Cliente", [("nombre", "String"), ("email", "String"), ("direccion", "String"), ("telefono", "String")]),
+                ("Pedido", [("fecha", "LocalDateTime"), ("total", "Double"), ("estado", "String")]),
+                ("Producto", [("nombre", "String"), ("precio", "Double"), ("stock", "Integer"), ("descripcion", "String")]),
+                ("Categoria", [("nombre", "String"), ("descripcion", "String")]),
+                ("DetallePedido", [("cantidad", "Integer"), ("precioUnitario", "Double"), ("subtotal", "Double")]),
+            ], [
+                ("Cliente", "Pedido", RelationshipTypeEnum.ONE_TO_MANY, "1", "*"),
+                ("Categoria", "Producto", RelationshipTypeEnum.ONE_TO_MANY, "1", "*"),
+                ("Pedido", "DetallePedido", RelationshipTypeEnum.ONE_TO_MANY, "1", "*"),
+                ("Producto", "DetallePedido", RelationshipTypeEnum.ONE_TO_MANY, "1", "*"),
+            ], current_uml)
+
+        # 4. Universidad / Escuela / Colegio
+        if any(w in topic for w in ["universidad", "colegio", "escuela", "instituto", "educativo", "academico"]):
+            return cls._build_preset_commands([
+                ("Estudiante", [("nombre", "String"), ("legajo", "String"), ("email", "String")]),
+                ("Profesor", [("nombre", "String"), ("titulo", "String"), ("email", "String")]),
+                ("Curso", [("nombre", "String"), ("codigo", "String"), ("creditos", "Integer")]),
+                ("Aula", [("numero", "String"), ("piso", "Integer"), ("capacidad", "Integer")]),
+                ("Inscripcion", [("fechaInscripcion", "LocalDate"), ("calificacion", "Double")]),
+            ], [
+                ("Profesor", "Curso", RelationshipTypeEnum.ONE_TO_MANY, "1", "*"),
+                ("Aula", "Curso", RelationshipTypeEnum.ONE_TO_MANY, "1", "*"),
+                ("Estudiante", "Inscripcion", RelationshipTypeEnum.ONE_TO_MANY, "1", "*"),
+                ("Curso", "Inscripcion", RelationshipTypeEnum.ONE_TO_MANY, "1", "*"),
+            ], current_uml)
+
+        # 5. Biblioteca
+        if any(w in topic for w in ["biblioteca", "libro", "prestamo"]):
+            return cls._build_preset_commands([
+                ("Usuario", [("nombre", "String"), ("dni", "String"), ("email", "String")]),
+                ("Libro", [("titulo", "String"), ("isbn", "String"), ("editorial", "String"), ("anio", "Integer")]),
+                ("Autor", [("nombre", "String"), ("nacionalidad", "String")]),
+                ("Prestamo", [("fechaPrestamo", "LocalDate"), ("fechaDevolucion", "LocalDate"), ("estado", "String")]),
+                ("Categoria", [("nombre", "String")]),
+            ], [
+                ("Autor", "Libro", RelationshipTypeEnum.ONE_TO_MANY, "1", "*"),
+                ("Categoria", "Libro", RelationshipTypeEnum.ONE_TO_MANY, "1", "*"),
+                ("Usuario", "Prestamo", RelationshipTypeEnum.ONE_TO_MANY, "1", "*"),
+                ("Libro", "Prestamo", RelationshipTypeEnum.ONE_TO_MANY, "1", "*"),
+            ], current_uml)
+
+        return []
+
+    @classmethod
+    def _build_preset_commands(
+        cls,
+        classes: List[Tuple[str, List[Tuple[str, str]]]],
+        relationships: List[Tuple[str, str, RelationshipTypeEnum, str, str]],
+        current_uml: CanonicalUmlDocument,
+    ) -> List[Dict[str, Any]]:
+        cmds = []
+        class_id_map = {}
+        existing_count = len(current_uml.classes)
+
+        for idx, (cls_name, attrs) in enumerate(classes):
+            c_id = f"cls-{uuid.uuid4().hex[:8]}"
+            class_id_map[cls_name.lower()] = c_id
+            col = (existing_count + idx) % 3
+            row = (existing_count + idx) // 3
+            cmds.append({
+                "command_type": CommandTypeEnum.CREATE_CLASS.value,
+                "class_id": c_id,
+                "name": cls_name,
+                "position": {"x": float(80 + col * 320), "y": float(80 + row * 280)},
+            })
+            for attr_name, attr_type in attrs:
+                cmds.append({
+                    "command_type": CommandTypeEnum.ADD_ATTRIBUTE.value,
+                    "class_id": c_id,
+                    "name": attr_name,
+                    "type": attr_type,
+                    "primary_key": False,
+                    "nullable": True,
+                })
+
+        for src_name, tgt_name, rel_type, src_card, tgt_card in relationships:
+            src_id = class_id_map.get(src_name.lower())
+            tgt_id = class_id_map.get(tgt_name.lower())
+            if src_id and tgt_id:
+                cmds.append({
+                    "command_type": CommandTypeEnum.CREATE_RELATIONSHIP.value,
+                    "relationship_id": f"rel-{uuid.uuid4().hex[:8]}",
+                    "type": rel_type.value,
+                    "source_class_id": src_id,
+                    "target_class_id": tgt_id,
+                    "source_cardinality": src_card,
+                    "target_cardinality": tgt_card,
+                })
+        return cmds
 
     @classmethod
     def _find_create_tables(cls, text: str) -> List[Tuple[str, str]]:
@@ -560,7 +705,7 @@ class RuleBasedAiProvider(AiProviderPort):
         # 1. CREATE CLASS (with optional attributes: "Crea la clase Cliente con atributos id de tipo Long, nombre de tipo String")
         # Match class creation
         create_class_match = re.search(
-            r"(?:crea(?:r)?|nueva|agregar?|add|create|new)\s+(?:la\s+|una\s+)?clase\s+(?:llamada\s+)?([A-Za-z0-9_]+)(?:\s+(?:con\s+atributos?|con\s+campos?|with\s+attributes?)\s+(.*))?",
+            r"(?:crea(?:r)?|nueva|agregar?|add|create|new)\s+(?:la\s+|una\s+)?(?:clase|tabla|entidad)\s+(?:llamada\s+)?([A-Za-z0-9_]+)(?:\s+(?:con\s+atributos?|con\s+campos?|con\s+columnas?|with\s+attributes?|con)\s+(.*))?",
             normalized_prompt,
             re.IGNORECASE,
         )

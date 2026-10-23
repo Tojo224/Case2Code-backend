@@ -1,8 +1,20 @@
 import json
 import logging
+import re
 import uuid
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    HTTPException,
+    Query,
+    Response,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+    status,
+)
 from sqlalchemy.orm import Session
 
 from app.application.command_bus import command_bus
@@ -13,6 +25,8 @@ from app.domain.models.user import CollaboratorRole, ProjectCollaborator, User
 from app.domain.services.uml_validator import UmlValidationError
 from app.infrastructure.ai import ai_uml_interpreter
 from app.infrastructure.collaboration.connection_manager import connection_manager
+from app.infrastructure.interchange.xmi_exporter import XmiExporter
+from app.infrastructure.interchange.xmi_importer import XmiImporter
 from app.infrastructure.persistence.diagram_repository import SqlAlchemyDiagramRepository
 from app.infrastructure.persistence.user_repository import SqlAlchemyUserRepository
 from app.presentation.routes.auth import get_current_user, get_current_user_optional, get_user_repo
@@ -56,6 +70,50 @@ def create_diagram(
     if current_user:
         user_repo.add_collaborator(diagram_id, current_user.id, CollaboratorRole.OWNER)
     return document
+
+
+@router.post("/import/xmi", response_model=CanonicalUmlDocument, status_code=status.HTTP_201_CREATED)
+async def import_new_diagram_xmi(
+    file: UploadFile = File(...),
+    name: Optional[str] = Query(None),
+    repo: SqlAlchemyDiagramRepository = Depends(get_repository),
+    user_repo: SqlAlchemyUserRepository = Depends(get_user_repo),
+    current_user: Optional[User] = Depends(get_current_user_optional),
+):
+    diagram_id = f"diag-{uuid.uuid4().hex[:8]}"
+    owner_id = current_user.id if current_user else None
+    fallback_name = file.filename.rsplit(".", 1)[0] if file.filename else "Imported Model"
+    diag_name = name.strip() if name and name.strip() else fallback_name
+
+    empty_doc = CanonicalUmlDocument(
+        id=diagram_id,
+        name=diag_name,
+        description="Imported from Enterprise Architect XMI 2.1",
+        version=1,
+        owner_id=owner_id,
+        classes=[],
+        relationships=[],
+    )
+
+    content_bytes = await file.read()
+    try:
+        xml_str = content_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        xml_str = content_bytes.decode("latin-1")
+
+    try:
+        updated_document = XmiImporter.import_xmi(xml_str, empty_doc)
+    except Exception as e:
+        logger.error(f"Error parsing XMI file: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Error parsing XMI file: {str(e)}",
+        )
+
+    repo.save(updated_document)
+    if current_user:
+        user_repo.add_collaborator(diagram_id, current_user.id, CollaboratorRole.OWNER)
+    return updated_document
 
 
 @router.get("", response_model=List[CanonicalUmlDocument])
@@ -255,6 +313,104 @@ async def process_assistant_prompt(
         document=updated_doc,
         error=None,
     )
+
+
+# --- Enterprise Architect XMI Interchange Endpoints ---
+
+@router.get("/{diagram_id}/export/xmi")
+def export_diagram_xmi(
+    diagram_id: str,
+    repo: SqlAlchemyDiagramRepository = Depends(get_repository),
+    user_repo: SqlAlchemyUserRepository = Depends(get_user_repo),
+    current_user: Optional[User] = Depends(get_current_user_optional),
+):
+    document = repo.get_by_id(diagram_id)
+    if not document:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Diagram '{diagram_id}' not found.",
+        )
+    if document.owner_id:
+        if not current_user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Inicia sesión para acceder a este proyecto.",
+            )
+        role = user_repo.get_user_role(diagram_id, current_user.id)
+        if not role and document.owner_id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="No tienes permiso para acceder a este proyecto.",
+            )
+
+    xmi_content = XmiExporter.export(document)
+    safe_name = re.sub(r"[^a-zA-Z0-9_\-]", "_", document.name.strip()) or "model"
+    return Response(
+        content=xmi_content,
+        media_type="application/xml",
+        headers={
+            "Content-Disposition": f'attachment; filename="{safe_name}.xmi"',
+        },
+    )
+
+
+@router.post("/{diagram_id}/import/xmi", response_model=CanonicalUmlDocument)
+async def import_diagram_xmi(
+    diagram_id: str,
+    file: UploadFile = File(...),
+    repo: SqlAlchemyDiagramRepository = Depends(get_repository),
+    user_repo: SqlAlchemyUserRepository = Depends(get_user_repo),
+    current_user: Optional[User] = Depends(get_current_user_optional),
+):
+    document = repo.get_by_id(diagram_id)
+    if not document:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Diagram '{diagram_id}' not found.",
+        )
+    if document.owner_id:
+        if not current_user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Inicia sesión para modificar este proyecto.",
+            )
+        role = user_repo.get_user_role(diagram_id, current_user.id)
+        if not role and document.owner_id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="No tienes permiso para modificar este proyecto.",
+            )
+        if role == CollaboratorRole.VIEWER:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Los observadores (viewers) no pueden importar diagramas.",
+            )
+
+    content_bytes = await file.read()
+    try:
+        xml_str = content_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        xml_str = content_bytes.decode("latin-1")
+
+    try:
+        updated_document = XmiImporter.import_xmi(xml_str, document)
+    except Exception as e:
+        logger.error(f"Error parsing XMI file: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Error parsing XMI file: {str(e)}",
+        )
+
+    updated_document.version += 1
+    repo.save(updated_document)
+
+    # Broadcast update to all active web sockets
+    await connection_manager.broadcast_document_update(
+        diagram_id=diagram_id,
+        document_dict=updated_document.model_dump(mode="json"),
+    )
+
+    return updated_document
 
 
 # --- Collaborator Endpoints ---

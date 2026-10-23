@@ -7,7 +7,7 @@ from pydantic import TypeAdapter
 
 from app.application.command_bus import command_bus
 from app.core.config import settings
-from app.domain.models.canonical_uml import CanonicalUmlDocument
+from app.domain.models.canonical_uml import CanonicalUmlDocument, RelationshipTypeEnum
 from app.domain.models.commands import CommandTypeEnum, UmlCommand
 from app.domain.services.uml_validator import UmlValidationError
 from app.infrastructure.ai.ai_provider import (
@@ -192,6 +192,25 @@ class AiUmlInterpreter:
         auto_resolved_roles: List[Tuple[str, str, str]] = []
         validated_commands: List[UmlCommand] = []
 
+        # Track seen attributes per class to prevent duplicate attribute errors
+        seen_class_attributes: Dict[str, Set[str]] = {}
+        for c in initial_doc.classes:
+            seen_class_attributes[c.id] = {a.name.lower() for a in c.attributes}
+
+        # Grid-layout multiple newly created classes so they don't overlap at (100, 100)
+        new_classes_in_batch = [r for r in raw_commands if r.get("command_type") == CommandTypeEnum.CREATE_CLASS.value]
+        existing_class_count = len(initial_doc.classes)
+        for idx, raw_cls in enumerate(new_classes_in_batch):
+            pos = raw_cls.get("position")
+            # If position is missing, (0, 0) or default (100, 100)
+            if not pos or (pos.get("x") in (0, 100) and pos.get("y") in (0, 100)):
+                col = (existing_class_count + idx) % 3
+                row = (existing_class_count + idx) // 3
+                raw_cls["position"] = {
+                    "x": float(80 + col * 320),
+                    "y": float(80 + row * 280),
+                }
+
         for raw in raw_commands:
             cmd_type = raw.get("command_type")
             if not cmd_type:
@@ -211,6 +230,9 @@ class AiUmlInterpreter:
                 name_to_class_id[raw_name.lower().replace(" ", "_")] = class_id
                 name_to_class_id[raw_name.lower().replace(" ", "-")] = class_id
                 name_to_class_id[class_id.lower()] = class_id
+
+                # handle_create_class creates default 'id' PK attribute
+                seen_class_attributes[class_id] = {"id"}
 
             # If ADD_ATTRIBUTE or UPDATE_ATTRIBUTE, sanitize attribute name
             if cmd_type in (CommandTypeEnum.ADD_ATTRIBUTE.value, CommandTypeEnum.UPDATE_ATTRIBUTE.value):
@@ -247,6 +269,32 @@ class AiUmlInterpreter:
                     if sanitized_tgt in name_to_class_id:
                         raw["target_class_id"] = name_to_class_id[sanitized_tgt]
 
+            # Intercept duplicate ADD_ATTRIBUTE:
+            if cmd_type == CommandTypeEnum.ADD_ATTRIBUTE.value:
+                target_cls_id = raw.get("class_id")
+                raw_attr_name = str(raw.get("name", "")).strip().lower()
+
+                if target_cls_id and raw_attr_name:
+                    existing_attrs = seen_class_attributes.get(target_cls_id, set())
+                    if raw_attr_name in existing_attrs:
+                        # If attribute is "id", check if it matches default PK or updates it
+                        if raw_attr_name == "id":
+                            raw_attr_type = str(raw.get("type", "Long")).lower()
+                            if raw_attr_type in ("long", "bigint"):
+                                # Exactly identical to default 'id: Long (PK)' created by handle_create_class
+                                continue
+                            else:
+                                # Convert to UPDATE_ATTRIBUTE to update the default PK type
+                                raw["command_type"] = CommandTypeEnum.UPDATE_ATTRIBUTE.value
+                                raw["attribute_id"] = "id"
+                                cmd_type = CommandTypeEnum.UPDATE_ATTRIBUTE.value
+                        else:
+                            # Skip duplicate attribute in the same class to avoid UmlValidationError
+                            logger.info(f"Skipping duplicate attribute '{raw_attr_name}' for class '{target_cls_id}'")
+                            continue
+
+                    seen_class_attributes.setdefault(target_cls_id, set()).add(raw_attr_name)
+
             # If references attribute_id by attribute name, resolve
             if cmd_type in [CommandTypeEnum.UPDATE_ATTRIBUTE.value, CommandTypeEnum.DELETE_ATTRIBUTE.value]:
                 class_id = raw.get("class_id")
@@ -258,11 +306,19 @@ class AiUmlInterpreter:
                             raw["attribute_id"] = a.id
                             break
 
-            # If CREATE_RELATIONSHIP, check multi-relation collision
+            # If CREATE_RELATIONSHIP, check multi-relation collision and Many-to-Many
             if cmd_type == CommandTypeEnum.CREATE_RELATIONSHIP.value:
                 src = raw.get("source_class_id")
                 tgt = raw.get("target_class_id")
                 rtype = raw.get("type", "ONE_TO_MANY")
+
+                # Handle MANY_TO_MANY cardinalities
+                if rtype == RelationshipTypeEnum.MANY_TO_MANY.value:
+                    if not raw.get("source_cardinality"):
+                        raw["source_cardinality"] = "*"
+                    if not raw.get("target_cardinality"):
+                        raw["target_cardinality"] = "*"
+
                 if src and tgt:
                     k = (str(src), str(tgt), str(rtype))
                     count = rel_key_count.get(k, 0)
