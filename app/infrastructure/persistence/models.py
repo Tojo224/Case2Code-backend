@@ -85,6 +85,7 @@ class DiagramChatMessageModel(Base):
     sender_type = Column(String(32), nullable=False, default="USER")
     content = Column(Text, nullable=False)
     addressed_to = Column(String(255), nullable=True)
+    ai_engine = Column(String(128), nullable=True)
     executed_commands = Column(JSON().with_variant(JSONB, "postgresql"), nullable=True)
     created_at = Column(
         DateTime(timezone=True),

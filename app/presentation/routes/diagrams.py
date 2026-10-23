@@ -133,6 +133,23 @@ def list_diagrams(
     return repo.list_public()
 
 
+@router.get("/ai/config")
+async def get_ai_provider_config():
+    """Returns current Local LLM / Cloud AI status and runtime settings."""
+    return await senior_colleague_orchestrator.get_status()
+
+
+@router.post("/ai/config")
+async def update_ai_provider_config(payload: dict):
+    """Updates runtime Local LLM / Cloud AI provider settings."""
+    senior_colleague_orchestrator.update_runtime_config(
+        provider_mode=payload.get("provider_mode"),
+        local_base_url=payload.get("local_base_url"),
+        local_model=payload.get("local_model"),
+    )
+    return await senior_colleague_orchestrator.get_status()
+
+
 @router.get("/{diagram_id}", response_model=CanonicalUmlDocument)
 def get_diagram(
     diagram_id: str,
@@ -672,6 +689,7 @@ async def diagram_websocket(
                                     sender_type=SenderType.AI,
                                     content=reply_text,
                                     addressed_to=addressed_to or user.name,
+                                    ai_engine=senior_colleague_orchestrator.last_used_engine,
                                     executed_commands=[c.model_dump(mode="json") for c in executed_commands] if executed_commands else None,
                                 )
                                 chat_repo.add_message(ai_msg)

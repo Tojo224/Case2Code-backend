@@ -118,3 +118,71 @@ def test_websocket_chat_and_senior_ai_response(client, diagram_repo):
             ai_typing_end = json.loads(ws.receive_text())
             assert ai_typing_end["type"] == "TYPING_INDICATOR"
             assert ai_typing_end["is_typing"] is False
+
+
+def test_ai_provider_config_endpoints(client):
+    with patch(
+        "app.infrastructure.ai.ai_provider.LocalLlmAiProvider.check_health",
+        new_callable=AsyncMock,
+    ) as mock_health:
+        mock_health.return_value = {
+            "online": True,
+            "engine": "ollama",
+            "base_url": "http://localhost:11434",
+            "configured_model": "qwen2.5-coder:3b",
+            "available_models": ["qwen2.5-coder:3b", "llama3.2:3b"],
+        }
+
+        # 1. GET config
+        resp = client.get("/api/diagrams/ai/config")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["local_online"] is True
+        assert "qwen2.5-coder:3b" in data["local_available_models"]
+
+        # 2. POST config update
+        resp_post = client.post(
+            "/api/diagrams/ai/config",
+            json={
+                "provider_mode": "local",
+                "local_base_url": "http://localhost:11434/v1/",
+                "local_model": "llama3.2:3b",
+            },
+        )
+        assert resp_post.status_code == 200
+        updated = resp_post.json()
+        assert updated["provider_mode"] == "local"
+        assert updated["local_base_url"] == "http://localhost:11434"
+        assert updated["local_model"] == "llama3.2:3b"
+
+
+@pytest.mark.asyncio
+async def test_senior_orchestrator_with_local_llm():
+    from app.domain.models.user import User
+    from app.infrastructure.ai.ai_provider import LocalLlmAiProvider
+    from app.infrastructure.ai.senior_colleague import SeniorColleagueOrchestrator
+
+    local_prov = LocalLlmAiProvider(base_url="http://localhost:11434", model="qwen2.5-coder:3b")
+    orchestrator = SeniorColleagueOrchestrator(provider=local_prov)
+    speaker = User(id="usr-1", email="ana@test.com", name="Ana", avatar_color="#10B981")
+    doc = CanonicalUmlDocument(id="d-1", name="Test", version=1, classes=[], relationships=[])
+
+    with patch.object(
+        local_prov,
+        "generate_chat_response",
+        new_callable=AsyncMock,
+        return_value="@Ana, te recomiendo normalizar la tabla Pedido en 3FN.",
+    ):
+        reply, addressed_to, cmds, _ = await orchestrator.process_colleague_interaction(
+            prompt="¿Qué opinas del diseño de Pedido?",
+            speaker=speaker,
+            active_users=[],
+            document=doc,
+            chat_history=[],
+            ai_mode="advisory",
+        )
+        assert "@Ana" in reply
+        assert addressed_to == "Ana"
+        assert cmds == []
+        assert orchestrator.last_used_engine == "Local LLM (qwen2.5-coder:3b)"
+

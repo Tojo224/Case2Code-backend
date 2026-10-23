@@ -50,6 +50,7 @@ def init_db() -> None:
                 conn.execute(text("ALTER TABLE diagrams ADD COLUMN IF NOT EXISTS owner_id VARCHAR(64)"))
                 conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token VARCHAR(255)"))
                 conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token_expires_at TIMESTAMP WITH TIME ZONE"))
+                conn.execute(text("ALTER TABLE diagram_chat_messages ADD COLUMN IF NOT EXISTS ai_engine VARCHAR(128)"))
             else:
                 # Check SQLite schema for owner_id in diagrams
                 result = conn.execute(text("PRAGMA table_info(diagrams)")).fetchall()
@@ -64,6 +65,12 @@ def init_db() -> None:
                     conn.execute(text("ALTER TABLE users ADD COLUMN reset_token VARCHAR(255)"))
                 if user_cols and "reset_token_expires_at" not in user_cols:
                     conn.execute(text("ALTER TABLE users ADD COLUMN reset_token_expires_at DATETIME"))
+
+                # Check SQLite schema for ai_engine in diagram_chat_messages
+                chat_result = conn.execute(text("PRAGMA table_info(diagram_chat_messages)")).fetchall()
+                chat_cols = [row[1] for row in chat_result]
+                if chat_cols and "ai_engine" not in chat_cols:
+                    conn.execute(text("ALTER TABLE diagram_chat_messages ADD COLUMN ai_engine VARCHAR(128)"))
     except Exception as e:
         logger.warning(f"Database migration notice: {e}")
 

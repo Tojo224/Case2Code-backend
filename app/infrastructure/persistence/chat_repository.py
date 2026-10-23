@@ -19,6 +19,7 @@ class SqlAlchemyChatRepository:
             sender_type=message.sender_type.value if hasattr(message.sender_type, "value") else str(message.sender_type),
             content=message.content,
             addressed_to=message.addressed_to,
+            ai_engine=message.ai_engine,
             executed_commands=message.executed_commands,
             created_at=message.created_at,
         )
@@ -44,6 +45,7 @@ class SqlAlchemyChatRepository:
                 sender_type=SenderType(r.sender_type) if r.sender_type in ("USER", "AI") else SenderType.USER,
                 content=r.content,
                 addressed_to=r.addressed_to,
+                ai_engine=r.ai_engine,
                 executed_commands=r.executed_commands,
                 created_at=r.created_at,
             )
