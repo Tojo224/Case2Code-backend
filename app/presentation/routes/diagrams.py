@@ -21,12 +21,15 @@ from app.application.command_bus import command_bus
 from app.core.database import get_db
 from app.core.security import decode_access_token
 from app.domain.models.canonical_uml import CanonicalUmlDocument
+from app.domain.models.chat import ChatHistoryResponse, ChatMessage, SenderType
 from app.domain.models.user import CollaboratorRole, ProjectCollaborator, User
 from app.domain.services.uml_validator import UmlValidationError
 from app.infrastructure.ai import ai_uml_interpreter
+from app.infrastructure.ai.senior_colleague import senior_colleague_orchestrator
 from app.infrastructure.collaboration.connection_manager import connection_manager
 from app.infrastructure.interchange.xmi_exporter import XmiExporter
 from app.infrastructure.interchange.xmi_importer import XmiImporter
+from app.infrastructure.persistence.chat_repository import SqlAlchemyChatRepository
 from app.infrastructure.persistence.diagram_repository import SqlAlchemyDiagramRepository
 from app.infrastructure.persistence.user_repository import SqlAlchemyUserRepository
 from app.presentation.routes.auth import get_current_user, get_current_user_optional, get_user_repo
@@ -46,6 +49,10 @@ router = APIRouter(prefix="/diagrams", tags=["Diagrams"])
 
 def get_repository(db: Session = Depends(get_db)) -> SqlAlchemyDiagramRepository:
     return SqlAlchemyDiagramRepository(db)
+
+
+def get_chat_repo(db: Session = Depends(get_db)) -> SqlAlchemyChatRepository:
+    return SqlAlchemyChatRepository(db)
 
 
 @router.post("", response_model=CanonicalUmlDocument, status_code=status.HTTP_201_CREATED)
@@ -484,6 +491,39 @@ def remove_collaborator(
     return None
 
 
+# --- Team Chat Endpoints ---
+
+@router.get("/{diagram_id}/chat", response_model=ChatHistoryResponse)
+def get_diagram_chat_history(
+    diagram_id: str,
+    repo: SqlAlchemyDiagramRepository = Depends(get_repository),
+    chat_repo: SqlAlchemyChatRepository = Depends(get_chat_repo),
+    user_repo: SqlAlchemyUserRepository = Depends(get_user_repo),
+    current_user: Optional[User] = Depends(get_current_user_optional),
+):
+    document = repo.get_by_id(diagram_id)
+    if not document:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Diagram '{diagram_id}' not found.",
+        )
+    if document.owner_id:
+        if not current_user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Inicia sesión para ver el chat de este proyecto.",
+            )
+        role = user_repo.get_user_role(diagram_id, current_user.id)
+        if not role and document.owner_id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="No tienes permiso para acceder a este proyecto.",
+            )
+
+    messages = chat_repo.list_messages(diagram_id)
+    return ChatHistoryResponse(diagram_id=diagram_id, messages=messages)
+
+
 # --- WebSocket Multiplayer Hub ---
 
 @router.websocket("/{diagram_id}/ws")
@@ -495,6 +535,7 @@ async def diagram_websocket(
 ):
     diag_repo = SqlAlchemyDiagramRepository(db)
     user_repo = SqlAlchemyUserRepository(db)
+    chat_repo = SqlAlchemyChatRepository(db)
 
     document = diag_repo.get_by_id(diagram_id)
     if not document:
@@ -554,10 +595,115 @@ async def diagram_websocket(
                         websocket,
                         msg.get("selected_class_id"),
                     )
+                elif msg_type == "SEND_CHAT_MESSAGE":
+                    content = str(msg.get("content", "")).strip()
+                    ai_mode = str(msg.get("ai_mode", "PAIR_PROGRAMMER"))
+                    if content:
+                        msg_id = f"msg-{uuid.uuid4().hex[:8]}"
+                        user_msg = ChatMessage(
+                            id=msg_id,
+                            diagram_id=diagram_id,
+                            sender_id=user.id,
+                            sender_name=user.name,
+                            sender_avatar_color=user.avatar_color,
+                            sender_type=SenderType.USER,
+                            content=content,
+                            addressed_to=msg.get("addressed_to"),
+                        )
+                        chat_repo.add_message(user_msg)
+                        await connection_manager.broadcast_chat_message(
+                            diagram_id,
+                            user_msg.model_dump(mode="json"),
+                        )
+
+                        # Trigger AI Senior Developer if addressed to AI or in active room mode
+                        content_lower = content.lower()
+                        should_trigger_ai = (
+                            "@ai" in content_lower
+                            or "@senior" in content_lower
+                            or "@bot" in content_lower
+                            or "senior" in content_lower
+                            or "asistente" in content_lower
+                            or msg.get("force_ai", False)
+                            or bool(re.search(r"^(¿|\?|crea|agrega|elimina|relaciona|cómo|como|que|qué|ayuda)", content_lower))
+                        )
+
+                        if should_trigger_ai:
+                            # Notify room that Senior AI is typing
+                            await connection_manager.broadcast_typing(
+                                diagram_id=diagram_id,
+                                user_id="ai-senior",
+                                name="Senior AI",
+                                is_typing=True,
+                            )
+
+                            try:
+                                active_presences = connection_manager.get_active_presences(diagram_id)
+                                current_doc = diag_repo.get_by_id(diagram_id) or document
+                                recent_history = chat_repo.list_messages(diagram_id, limit=12)
+
+                                reply_text, addressed_to, executed_commands, updated_doc = (
+                                    await senior_colleague_orchestrator.process_colleague_interaction(
+                                        prompt=content,
+                                        speaker=user,
+                                        active_users=active_presences,
+                                        document=current_doc,
+                                        chat_history=recent_history,
+                                        ai_mode=ai_mode,
+                                    )
+                                )
+
+                                if executed_commands:
+                                    updated_doc.version += 1
+                                    diag_repo.save(updated_doc)
+                                    document = updated_doc
+                                    await connection_manager.broadcast_document_update(
+                                        diagram_id=diagram_id,
+                                        document_dict=updated_doc.model_dump(mode="json"),
+                                    )
+
+                                ai_msg_id = f"msg-{uuid.uuid4().hex[:8]}"
+                                ai_msg = ChatMessage(
+                                    id=ai_msg_id,
+                                    diagram_id=diagram_id,
+                                    sender_id="ai-senior",
+                                    sender_name="Senior AI",
+                                    sender_avatar_color="#8B5CF6",
+                                    sender_type=SenderType.AI,
+                                    content=reply_text,
+                                    addressed_to=addressed_to or user.name,
+                                    executed_commands=[c.model_dump(mode="json") for c in executed_commands] if executed_commands else None,
+                                )
+                                chat_repo.add_message(ai_msg)
+
+                                await connection_manager.broadcast_chat_message(
+                                    diagram_id,
+                                    ai_msg.model_dump(mode="json"),
+                                )
+                            except Exception as e:
+                                logger.error(f"Error executing AI senior colleague: {e}", exc_info=True)
+                            finally:
+                                await connection_manager.broadcast_typing(
+                                    diagram_id=diagram_id,
+                                    user_id="ai-senior",
+                                    name="Senior AI",
+                                    is_typing=False,
+                                )
+                elif msg_type == "SET_TYPING":
+                    is_typing = bool(msg.get("is_typing", False))
+                    await connection_manager.broadcast_typing(
+                        diagram_id=diagram_id,
+                        user_id=user.id,
+                        name=user.name,
+                        is_typing=is_typing,
+                        exclude_ws=websocket,
+                    )
                 elif msg_type == "PING":
                     await websocket.send_text(json.dumps({"type": "PONG"}))
             except json.JSONDecodeError:
                 pass
+            except Exception as e:
+                logger.error(f"Error handling websocket message: {e}", exc_info=True)
     except WebSocketDisconnect:
         await connection_manager.disconnect(websocket, diagram_id)
     except Exception as e:

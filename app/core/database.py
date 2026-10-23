@@ -17,6 +17,8 @@ def get_engine():
         connect_args = {}
         if "sqlite" in db_url:
             connect_args = {"check_same_thread": False}
+        else:
+            connect_args = {"connect_timeout": 3}
         engine = create_engine(db_url, connect_args=connect_args, pool_pre_ping=True)
         # Try a test connection
         with engine.connect() as conn:

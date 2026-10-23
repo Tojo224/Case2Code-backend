@@ -176,5 +176,39 @@ class ConnectionManager:
             exclude_ws=exclude_ws,
         )
 
+    async def broadcast_chat_message(
+        self,
+        diagram_id: str,
+        message_dict: dict,
+    ):
+        await self.broadcast(
+            diagram_id,
+            {
+                "type": "CHAT_MESSAGE",
+                "diagram_id": diagram_id,
+                "message": message_dict,
+            },
+        )
+
+    async def broadcast_typing(
+        self,
+        diagram_id: str,
+        user_id: str,
+        name: str,
+        is_typing: bool,
+        exclude_ws: Optional[WebSocket] = None,
+    ):
+        await self.broadcast(
+            diagram_id,
+            {
+                "type": "TYPING_INDICATOR",
+                "diagram_id": diagram_id,
+                "user_id": user_id,
+                "name": name,
+                "is_typing": is_typing,
+            },
+            exclude_ws=exclude_ws,
+        )
+
 
 connection_manager = ConnectionManager()
