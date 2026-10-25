@@ -16,7 +16,13 @@ class Settings(BaseSettings):
     # Fallback to SQLite if PostgreSQL connection fails in local testing/dev
     SQLITE_FALLBACK_URL: str = "sqlite:///./case2code.db"
 
-    # AI / LLM Configuration
+    # AI / LLM Configuration (Local-First Hybrid + Cloud Fallback)
+    AI_PROVIDER_MODE: str = os.getenv("AI_PROVIDER_MODE", "hybrid")  # "local" | "hybrid" | "gemini"
+    LOCAL_LLM_BASE_URL: str = os.getenv("LOCAL_LLM_BASE_URL", "http://localhost:11434")
+    LOCAL_LLM_MODEL: str = os.getenv("LOCAL_LLM_MODEL", "qwen2.5-coder:3b")
+    LOCAL_LLM_API_KEY: Optional[str] = os.getenv("LOCAL_LLM_API_KEY", None)
+    LOCAL_LLM_TIMEOUT: float = float(os.getenv("LOCAL_LLM_TIMEOUT", "15.0"))
+
     GEMINI_API_KEY: Optional[str] = os.getenv("GEMINI_API_KEY", None)
     GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
 

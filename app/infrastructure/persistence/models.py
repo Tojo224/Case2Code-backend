@@ -61,6 +61,39 @@ class DiagramModel(Base):
         back_populates="diagram",
         cascade="all, delete-orphan",
     )
+    chat_messages = relationship(
+        "DiagramChatMessageModel",
+        back_populates="diagram",
+        cascade="all, delete-orphan",
+        order_by="DiagramChatMessageModel.created_at",
+    )
+
+
+class DiagramChatMessageModel(Base):
+    __tablename__ = "diagram_chat_messages"
+
+    id = Column(String(64), primary_key=True, index=True)
+    diagram_id = Column(
+        String(64),
+        ForeignKey("diagrams.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    sender_id = Column(String(64), nullable=False)
+    sender_name = Column(String(255), nullable=False)
+    sender_avatar_color = Column(String(32), nullable=False, default="#3B82F6")
+    sender_type = Column(String(32), nullable=False, default="USER")
+    content = Column(Text, nullable=False)
+    addressed_to = Column(String(255), nullable=True)
+    ai_engine = Column(String(128), nullable=True)
+    executed_commands = Column(JSON().with_variant(JSONB, "postgresql"), nullable=True)
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+    diagram = relationship("DiagramModel", back_populates="chat_messages")
 
 
 class DiagramCollaboratorModel(Base):

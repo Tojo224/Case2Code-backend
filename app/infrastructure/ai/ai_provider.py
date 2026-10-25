@@ -35,7 +35,152 @@ class DatabaseSchemaParser:
         if table_list_cmds:
             return table_list_cmds
 
+        # 4. Check for domain presets (veterinaria, hotel, ecommerce, universidad, biblioteca, etc.)
+        domain_cmds = cls._parse_domain_presets(text, current_uml)
+        if domain_cmds:
+            return domain_cmds
+
         return []
+
+    @classmethod
+    def _parse_domain_presets(cls, text: str, current_uml: CanonicalUmlDocument) -> List[Dict[str, Any]]:
+        norm = text.lower().strip()
+        domain_intent = re.search(
+            r"(?:(?:crea(?:r)?|nueva|dise[ñn]a(?:r)?|genera(?:r)?)\s+(?:una\s+)?(?:base\s+de\s+datos|sistema|modelo|esquema)\s+(?:de\s+|para\s+(?:una?\s+)?|en\s+)|(?:base\s+de\s+datos|sistema|modelo)\s+(?:de\s+|para\s+(?:una?\s+)?))([a-z0-9_\s-]+)",
+            norm,
+        )
+        if not domain_intent:
+            return []
+
+        topic = domain_intent.group(1).strip()
+
+        # 1. Veterinaria
+        if any(w in topic for w in ["veterinaria", "mascota", "animal"]):
+            return cls._build_preset_commands([
+                ("Cliente", [("nombre", "String"), ("telefono", "String"), ("email", "String")]),
+                ("Mascota", [("nombre", "String"), ("especie", "String"), ("raza", "String"), ("fechaNacimiento", "LocalDate")]),
+                ("Veterinario", [("nombre", "String"), ("especialidad", "String"), ("matricula", "String")]),
+                ("Cita", [("fechaHora", "LocalDateTime"), ("motivo", "String"), ("estado", "String")]),
+                ("Tratamiento", [("descripcion", "String"), ("costo", "Double")]),
+                ("Vacuna", [("nombre", "String"), ("laboratorio", "String")]),
+                ("MascotaVacuna", [("fechaAplicacion", "LocalDate"), ("dosis", "String")]),
+            ], [
+                ("Cliente", "Mascota", RelationshipTypeEnum.ONE_TO_MANY, "1", "*"),
+                ("Mascota", "Cita", RelationshipTypeEnum.ONE_TO_MANY, "1", "*"),
+                ("Veterinario", "Cita", RelationshipTypeEnum.ONE_TO_MANY, "1", "*"),
+                ("Cita", "Tratamiento", RelationshipTypeEnum.ONE_TO_MANY, "1", "*"),
+                ("Mascota", "MascotaVacuna", RelationshipTypeEnum.ONE_TO_MANY, "1", "*"),
+                ("Vacuna", "MascotaVacuna", RelationshipTypeEnum.ONE_TO_MANY, "1", "*"),
+            ], current_uml)
+
+        # 2. Hotel
+        if any(w in topic for w in ["hotel", "hospedaje", "alojamiento"]):
+            return cls._build_preset_commands([
+                ("Huesped", [("nombre", "String"), ("documento", "String"), ("telefono", "String"), ("email", "String")]),
+                ("Habitacion", [("numero", "String"), ("piso", "Integer"), ("precioNoche", "Double")]),
+                ("TipoHabitacion", [("nombre", "String"), ("capacidad", "Integer"), ("descripcion", "String")]),
+                ("Reserva", [("fechaIngreso", "LocalDate"), ("fechaSalida", "LocalDate"), ("estado", "String"), ("total", "Double")]),
+                ("Pago", [("monto", "Double"), ("fechaPago", "LocalDateTime"), ("metodoPago", "String")]),
+            ], [
+                ("TipoHabitacion", "Habitacion", RelationshipTypeEnum.ONE_TO_MANY, "1", "*"),
+                ("Huesped", "Reserva", RelationshipTypeEnum.ONE_TO_MANY, "1", "*"),
+                ("Habitacion", "Reserva", RelationshipTypeEnum.ONE_TO_MANY, "1", "*"),
+                ("Reserva", "Pago", RelationshipTypeEnum.ONE_TO_MANY, "1", "*"),
+            ], current_uml)
+
+        # 3. E-commerce / Tienda
+        if any(w in topic for w in ["tienda", "ecommerce", "e-commerce", "compras", "ventas", "pedido"]):
+            return cls._build_preset_commands([
+                ("Cliente", [("nombre", "String"), ("email", "String"), ("direccion", "String"), ("telefono", "String")]),
+                ("Pedido", [("fecha", "LocalDateTime"), ("total", "Double"), ("estado", "String")]),
+                ("Producto", [("nombre", "String"), ("precio", "Double"), ("stock", "Integer"), ("descripcion", "String")]),
+                ("Categoria", [("nombre", "String"), ("descripcion", "String")]),
+                ("DetallePedido", [("cantidad", "Integer"), ("precioUnitario", "Double"), ("subtotal", "Double")]),
+            ], [
+                ("Cliente", "Pedido", RelationshipTypeEnum.ONE_TO_MANY, "1", "*"),
+                ("Categoria", "Producto", RelationshipTypeEnum.ONE_TO_MANY, "1", "*"),
+                ("Pedido", "DetallePedido", RelationshipTypeEnum.ONE_TO_MANY, "1", "*"),
+                ("Producto", "DetallePedido", RelationshipTypeEnum.ONE_TO_MANY, "1", "*"),
+            ], current_uml)
+
+        # 4. Universidad / Escuela / Colegio
+        if any(w in topic for w in ["universidad", "colegio", "escuela", "instituto", "educativo", "academico"]):
+            return cls._build_preset_commands([
+                ("Estudiante", [("nombre", "String"), ("legajo", "String"), ("email", "String")]),
+                ("Profesor", [("nombre", "String"), ("titulo", "String"), ("email", "String")]),
+                ("Curso", [("nombre", "String"), ("codigo", "String"), ("creditos", "Integer")]),
+                ("Aula", [("numero", "String"), ("piso", "Integer"), ("capacidad", "Integer")]),
+                ("Inscripcion", [("fechaInscripcion", "LocalDate"), ("calificacion", "Double")]),
+            ], [
+                ("Profesor", "Curso", RelationshipTypeEnum.ONE_TO_MANY, "1", "*"),
+                ("Aula", "Curso", RelationshipTypeEnum.ONE_TO_MANY, "1", "*"),
+                ("Estudiante", "Inscripcion", RelationshipTypeEnum.ONE_TO_MANY, "1", "*"),
+                ("Curso", "Inscripcion", RelationshipTypeEnum.ONE_TO_MANY, "1", "*"),
+            ], current_uml)
+
+        # 5. Biblioteca
+        if any(w in topic for w in ["biblioteca", "libro", "prestamo"]):
+            return cls._build_preset_commands([
+                ("Usuario", [("nombre", "String"), ("dni", "String"), ("email", "String")]),
+                ("Libro", [("titulo", "String"), ("isbn", "String"), ("editorial", "String"), ("anio", "Integer")]),
+                ("Autor", [("nombre", "String"), ("nacionalidad", "String")]),
+                ("Prestamo", [("fechaPrestamo", "LocalDate"), ("fechaDevolucion", "LocalDate"), ("estado", "String")]),
+                ("Categoria", [("nombre", "String")]),
+            ], [
+                ("Autor", "Libro", RelationshipTypeEnum.ONE_TO_MANY, "1", "*"),
+                ("Categoria", "Libro", RelationshipTypeEnum.ONE_TO_MANY, "1", "*"),
+                ("Usuario", "Prestamo", RelationshipTypeEnum.ONE_TO_MANY, "1", "*"),
+                ("Libro", "Prestamo", RelationshipTypeEnum.ONE_TO_MANY, "1", "*"),
+            ], current_uml)
+
+        return []
+
+    @classmethod
+    def _build_preset_commands(
+        cls,
+        classes: List[Tuple[str, List[Tuple[str, str]]]],
+        relationships: List[Tuple[str, str, RelationshipTypeEnum, str, str]],
+        current_uml: CanonicalUmlDocument,
+    ) -> List[Dict[str, Any]]:
+        cmds = []
+        class_id_map = {}
+        existing_count = len(current_uml.classes)
+
+        for idx, (cls_name, attrs) in enumerate(classes):
+            c_id = f"cls-{uuid.uuid4().hex[:8]}"
+            class_id_map[cls_name.lower()] = c_id
+            col = (existing_count + idx) % 3
+            row = (existing_count + idx) // 3
+            cmds.append({
+                "command_type": CommandTypeEnum.CREATE_CLASS.value,
+                "class_id": c_id,
+                "name": cls_name,
+                "position": {"x": float(80 + col * 320), "y": float(80 + row * 280)},
+            })
+            for attr_name, attr_type in attrs:
+                cmds.append({
+                    "command_type": CommandTypeEnum.ADD_ATTRIBUTE.value,
+                    "class_id": c_id,
+                    "name": attr_name,
+                    "type": attr_type,
+                    "primary_key": False,
+                    "nullable": True,
+                })
+
+        for src_name, tgt_name, rel_type, src_card, tgt_card in relationships:
+            src_id = class_id_map.get(src_name.lower())
+            tgt_id = class_id_map.get(tgt_name.lower())
+            if src_id and tgt_id:
+                cmds.append({
+                    "command_type": CommandTypeEnum.CREATE_RELATIONSHIP.value,
+                    "relationship_id": f"rel-{uuid.uuid4().hex[:8]}",
+                    "type": rel_type.value,
+                    "source_class_id": src_id,
+                    "target_class_id": tgt_id,
+                    "source_cardinality": src_card,
+                    "target_cardinality": tgt_card,
+                })
+        return cmds
 
     @classmethod
     def _find_create_tables(cls, text: str) -> List[Tuple[str, str]]:
@@ -361,6 +506,10 @@ class DatabaseSchemaParser:
 class AiProviderPort(ABC):
     """Port for AI / LLM providers converting natural language and diagrams to UML commands."""
 
+    @property
+    def provider_name(self) -> str:
+        return self.__class__.__name__
+
     @abstractmethod
     async def generate_commands(
         self,
@@ -370,6 +519,237 @@ class AiProviderPort(ABC):
     ) -> Union[List[Dict[str, Any]], Dict[str, Any]]:
         """Takes a user prompt, current diagram state and optional image data, returns raw command dicts or envelope."""
         pass
+
+    async def generate_chat_response(
+        self,
+        system_prompt: str,
+        user_message: str,
+    ) -> Optional[str]:
+        """Generates a conversational response given a system prompt and user message."""
+        return None
+
+
+def _extract_commands_json(text_content: str) -> Dict[str, Any]:
+    """Robustly extracts UML command JSON from LLM output."""
+    text_content = text_content.strip()
+    code_block_match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text_content)
+    if code_block_match:
+        candidate_json = code_block_match.group(1).strip()
+    else:
+        json_structure_match = re.search(r"(\{[\s\S]*\}|\[[\s\S]*\])", text_content)
+        candidate_json = json_structure_match.group(1).strip() if json_structure_match else text_content
+
+    try:
+        parsed = json.loads(candidate_json)
+    except Exception as e:
+        logger.warning(f"Failed to parse model JSON: {e}. Raw content: {text_content[:300]}")
+        return {"commands": [], "question": "No pude procesar la respuesta del modelo como JSON estructurado."}
+
+    if isinstance(parsed, dict):
+        cmds = parsed.get("commands", [])
+        q = parsed.get("question") or parsed.get("clarification_question")
+        if not cmds and "command_type" in parsed:
+            cmds = [parsed]
+        return {"commands": cmds, "question": q}
+    elif isinstance(parsed, list):
+        return {"commands": parsed, "question": None}
+    return {"commands": [], "question": None}
+
+
+class LocalLlmAiProvider(AiProviderPort):
+    """Local LLM provider compatible with Ollama (/api/chat & /v1/chat/completions),
+    LM Studio, vLLM, and remote GPU workers exposed via Cloudflare/ngrok tunnels.
+    """
+
+    def __init__(
+        self,
+        base_url: str = "http://localhost:11434",
+        model: str = "qwen2.5-coder:3b",
+        api_key: Optional[str] = None,
+        timeout: float = 15.0,
+    ):
+        clean_url = base_url.rstrip("/")
+        if clean_url.endswith("/v1"):
+            clean_url = clean_url[:-3].rstrip("/")
+        self.base_url = clean_url
+        self.model = model
+        self.api_key = api_key
+        self.timeout = timeout
+
+    @property
+    def provider_name(self) -> str:
+        return f"Local LLM ({self.model})"
+
+    def _headers(self) -> Dict[str, str]:
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        return headers
+
+    async def check_health(self) -> Dict[str, Any]:
+        """Checks connectivity and available models on the local Ollama / OpenAI-compatible node."""
+        timeout = httpx.Timeout(2.5, connect=1.5)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            # 1. Try Ollama native /api/tags
+            try:
+                resp = await client.get(f"{self.base_url}/api/tags", headers=self._headers())
+                if resp.status_code == 200:
+                    data = resp.json()
+                    models = [m.get("name", "") for m in data.get("models", []) if isinstance(m, dict)]
+                    return {
+                        "online": True,
+                        "engine": "ollama",
+                        "base_url": self.base_url,
+                        "configured_model": self.model,
+                        "available_models": models,
+                    }
+            except Exception:
+                pass
+
+            # 2. Try OpenAI-compatible /v1/models (LM Studio, vLLM, etc.)
+            try:
+                resp = await client.get(f"{self.base_url}/v1/models", headers=self._headers())
+                if resp.status_code == 200:
+                    data = resp.json()
+                    models = [m.get("id", "") for m in data.get("data", []) if isinstance(m, dict)]
+                    return {
+                        "online": True,
+                        "engine": "openai_compatible",
+                        "base_url": self.base_url,
+                        "configured_model": self.model,
+                        "available_models": models,
+                    }
+            except Exception as e:
+                return {
+                    "online": False,
+                    "engine": "unreachable",
+                    "base_url": self.base_url,
+                    "configured_model": self.model,
+                    "available_models": [],
+                    "error": str(e),
+                }
+
+        return {
+            "online": False,
+            "engine": "unreachable",
+            "base_url": self.base_url,
+            "configured_model": self.model,
+            "available_models": [],
+        }
+
+    async def generate_chat_response(
+        self,
+        system_prompt: str,
+        user_message: str,
+    ) -> Optional[str]:
+        timeout = httpx.Timeout(self.timeout, connect=2.5)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            # 1. Try OpenAI-compatible /v1/chat/completions
+            v1_payload = {
+                "model": self.model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_message},
+                ],
+                "temperature": 0.3,
+                "max_tokens": 1024,
+            }
+            try:
+                resp = await client.post(
+                    f"{self.base_url}/v1/chat/completions",
+                    json=v1_payload,
+                    headers=self._headers(),
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    choices = data.get("choices", [])
+                    if choices and "message" in choices[0]:
+                        content = choices[0]["message"].get("content", "").strip()
+                        if content:
+                            return content
+            except Exception as e:
+                logger.debug(f"Local LLM /v1/chat/completions fallback notice: {e}")
+
+            # 2. Fallback to native Ollama /api/chat
+            ollama_payload = {
+                "model": self.model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_message},
+                ],
+                "stream": False,
+                "options": {"temperature": 0.3},
+            }
+            resp = await client.post(
+                f"{self.base_url}/api/chat",
+                json=ollama_payload,
+                headers=self._headers(),
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            msg = data.get("message", {})
+            content = msg.get("content", "").strip()
+            return content or None
+
+    async def generate_commands(
+        self,
+        prompt: str,
+        current_uml: CanonicalUmlDocument,
+        image_data: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        # Build shared system prompt via helper on GeminiAiProvider
+        system_instruction = GeminiAiProvider.build_uml_system_prompt(current_uml)
+        timeout = httpx.Timeout(self.timeout, connect=2.5)
+
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            # Try OpenAI-compatible endpoint first
+            v1_payload: Dict[str, Any] = {
+                "model": self.model,
+                "messages": [
+                    {"role": "system", "content": system_instruction},
+                    {"role": "user", "content": f"User request: {prompt}"},
+                ],
+                "temperature": 0.1,
+                "response_format": {"type": "json_object"},
+            }
+            try:
+                resp = await client.post(
+                    f"{self.base_url}/v1/chat/completions",
+                    json=v1_payload,
+                    headers=self._headers(),
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    choices = data.get("choices", [])
+                    if choices and "message" in choices[0]:
+                        raw_text = choices[0]["message"].get("content", "").strip()
+                        if raw_text:
+                            return _extract_commands_json(raw_text)
+            except Exception as e:
+                logger.debug(f"Local LLM /v1/chat/completions command fallback: {e}")
+
+            # Try native Ollama /api/chat with format="json"
+            ollama_payload = {
+                "model": self.model,
+                "messages": [
+                    {"role": "system", "content": system_instruction},
+                    {"role": "user", "content": f"User request: {prompt}"},
+                ],
+                "format": "json",
+                "stream": False,
+                "options": {"temperature": 0.1},
+            }
+            resp = await client.post(
+                f"{self.base_url}/api/chat",
+                json=ollama_payload,
+                headers=self._headers(),
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            raw_text = data.get("message", {}).get("content", "").strip()
+            if not raw_text:
+                return {"commands": [], "question": None}
+            return _extract_commands_json(raw_text)
 
 
 class GeminiAiProvider(AiProviderPort):
@@ -382,7 +762,12 @@ class GeminiAiProvider(AiProviderPort):
             f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent?key={self.api_key}"
         )
 
-    def _build_system_prompt(self, current_uml: CanonicalUmlDocument) -> str:
+    @property
+    def provider_name(self) -> str:
+        return f"Cloud Gemini ({self.model})"
+
+    @staticmethod
+    def build_uml_system_prompt(current_uml: CanonicalUmlDocument) -> str:
         classes_summary = [
             {
                 "id": c.id,
@@ -453,6 +838,40 @@ Return a JSON object with:
 Or alternatively, a direct JSON array of UML commands: [ ... ].
 Do not output markdown codeblocks, explanations outside JSON, or any extra text.
 """
+
+    def _build_system_prompt(self, current_uml: CanonicalUmlDocument) -> str:
+        return self.build_uml_system_prompt(current_uml)
+
+    async def generate_chat_response(
+        self,
+        system_prompt: str,
+        user_message: str,
+    ) -> Optional[str]:
+        payload = {
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [{"text": f"{system_prompt}\n\n{user_message}"}],
+                }
+            ],
+            "generationConfig": {
+                "temperature": 0.4,
+                "maxOutputTokens": 2048,
+            },
+        }
+        timeout = httpx.Timeout(10.0, connect=3.0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.post(self.endpoint, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+            candidates = data.get("candidates", [])
+            if candidates and "content" in candidates[0]:
+                parts = candidates[0]["content"].get("parts", [])
+                if parts:
+                    raw_reply = parts[0].get("text", "").strip()
+                    if raw_reply:
+                        return raw_reply
+        return None
 
     async def generate_commands(
         self,
@@ -543,6 +962,10 @@ class RuleBasedAiProvider(AiProviderPort):
     Ensures offline, robust, reproducible execution during exams and unit testing.
     """
 
+    @property
+    def provider_name(self) -> str:
+        return "Local Rule Engine"
+
     async def generate_commands(
         self,
         prompt: str,
@@ -560,7 +983,7 @@ class RuleBasedAiProvider(AiProviderPort):
         # 1. CREATE CLASS (with optional attributes: "Crea la clase Cliente con atributos id de tipo Long, nombre de tipo String")
         # Match class creation
         create_class_match = re.search(
-            r"(?:crea(?:r)?|nueva|agregar?|add|create|new)\s+(?:la\s+|una\s+)?clase\s+(?:llamada\s+)?([A-Za-z0-9_]+)(?:\s+(?:con\s+atributos?|con\s+campos?|with\s+attributes?)\s+(.*))?",
+            r"(?:crea(?:r)?|nueva|agregar?|add|create|new)\s+(?:la\s+|una\s+)?(?:clase|tabla|entidad)\s+(?:llamada\s+)?([A-Za-z0-9_]+)(?:\s+(?:con\s+atributos?|con\s+campos?|con\s+columnas?|with\s+attributes?|con)\s+(.*))?",
             normalized_prompt,
             re.IGNORECASE,
         )

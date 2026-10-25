@@ -186,9 +186,7 @@ async def test_mocked_gemini_provider(sample_document):
         assert any(a.name == "costo" and a.type == "Double" for a in servicio_cls.attributes)
 
 
-def test_assistant_api_endpoint():
-    client = TestClient(app)
-
+def test_assistant_api_endpoint(client):
     # 1. Create diagram
     create_resp = client.post("/api/diagrams", json={"name": "Diagram Assistant Test"})
     assert create_resp.status_code == 201
