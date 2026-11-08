@@ -1,0 +1,270 @@
+import 'package:flutter/material.dart';
+import '../config/app_schema.dart';
+import '../services/api_service.dart';
+import 'entity_detail_screen.dart';
+import 'entity_form_screen.dart';
+
+class EntityListScreen extends StatefulWidget {
+  final EntitySchema entity;
+  final ApiService apiService;
+
+  const EntityListScreen({
+    super.key,
+    required this.entity,
+    required this.apiService,
+  });
+
+  @override
+  State<EntityListScreen> createState() => _EntityListScreenState();
+}
+
+class _EntityListScreenState extends State<EntityListScreen> {
+  List<Map<String, dynamic>> _records = [];
+  bool _isLoading = true;
+  String? _error;
+  String _searchQuery = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchRecords();
+  }
+
+  Future<void> _fetchRecords() async {
+    setState(() {
+      _isLoading = true;
+      _error = null;
+    });
+    try {
+      final list = await widget.apiService.getAll(widget.entity.endpointPath);
+      setState(() {
+        _records = list;
+        _isLoading = false;
+      });
+    } catch (e) {
+      setState(() {
+        _error = e.toString();
+        _isLoading = false;
+      });
+    }
+  }
+
+  Future<void> _openCreateForm() async {
+    final created = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => EntityFormScreen(
+          entity: widget.entity,
+          apiService: widget.apiService,
+        ),
+      ),
+    );
+    if (created == true) {
+      _fetchRecords();
+    }
+  }
+
+  Future<void> _openEditForm(Map<String, dynamic> record) async {
+    final updated = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => EntityFormScreen(
+          entity: widget.entity,
+          apiService: widget.apiService,
+          initialRecord: record,
+        ),
+      ),
+    );
+    if (updated == true) {
+      _fetchRecords();
+    }
+  }
+
+  Future<void> _confirmDelete(Map<String, dynamic> record) async {
+    final pk = record[widget.entity.primaryKeyField];
+    if (pk == null) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Delete ${widget.entity.displayName}'),
+        content: Text(
+          'Are you sure you want to delete "${recordDisplayLabel(widget.entity, record)}"?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true) {
+      try {
+        await widget.apiService.delete(widget.entity.endpointPath, pk);
+        _fetchRecords();
+      } catch (e) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Delete failed: $e')),
+        );
+      }
+    }
+  }
+
+  List<Map<String, dynamic>> get _filteredRecords {
+    final q = _searchQuery.trim().toLowerCase();
+    if (q.isEmpty) return _records;
+    return _records.where((r) {
+      return r.values.any(
+        (v) => v != null && v.toString().toLowerCase().contains(q),
+      );
+    }).toList();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final items = _filteredRecords;
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(widget.entity.displayName),
+        actions: [
+          IconButton(
+            tooltip: 'Refresh',
+            icon: const Icon(Icons.refresh),
+            onPressed: _fetchRecords,
+          ),
+        ],
+      ),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: _openCreateForm,
+        icon: const Icon(Icons.add),
+        label: Text('New ${widget.entity.displayName}'),
+      ),
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+            child: TextField(
+              decoration: const InputDecoration(
+                prefixIcon: Icon(Icons.search),
+                hintText: 'Search records...',
+                border: OutlineInputBorder(),
+                isDense: true,
+              ),
+              onChanged: (val) => setState(() => _searchQuery = val),
+            ),
+          ),
+          Expanded(
+            child: _isLoading
+                ? const Center(child: CircularProgressIndicator())
+                : _error != null
+                    ? Center(
+                        child: Padding(
+                          padding: const EdgeInsets.all(24),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Icon(Icons.error_outline, size: 48),
+                              const SizedBox(height: 12),
+                              Text(_error!, textAlign: TextAlign.center),
+                              const SizedBox(height: 12),
+                              FilledButton.icon(
+                                onPressed: _fetchRecords,
+                                icon: const Icon(Icons.refresh),
+                                label: const Text('Retry'),
+                              ),
+                            ],
+                          ),
+                        ),
+                      )
+                    : items.isEmpty
+                        ? Center(
+                            child: Text(
+                              'No ${widget.entity.displayName} records found.',
+                            ),
+                          )
+                        : RefreshIndicator(
+                            onRefresh: _fetchRecords,
+                            child: ListView.separated(
+                              padding: const EdgeInsets.fromLTRB(16, 8, 16, 88),
+                              itemCount: items.length,
+                              separatorBuilder: (_, __) =>
+                                  const SizedBox(height: 8),
+                              itemBuilder: (context, idx) {
+                                final item = items[idx];
+                                return Card(
+                                  child: ListTile(
+                                    title: Text(
+                                      recordDisplayLabel(widget.entity, item),
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                    subtitle: Text(
+                                      _buildSubtitle(item),
+                                      maxLines: 2,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                    onTap: () async {
+                                      final changed = await Navigator.of(context)
+                                          .push<bool>(
+                                        MaterialPageRoute(
+                                          builder: (_) => EntityDetailScreen(
+                                            entity: widget.entity,
+                                            record: item,
+                                            apiService: widget.apiService,
+                                          ),
+                                        ),
+                                      );
+                                      if (changed == true) {
+                                        _fetchRecords();
+                                      }
+                                    },
+                                    trailing: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        IconButton(
+                                          tooltip: 'Edit',
+                                          icon: const Icon(Icons.edit_outlined),
+                                          onPressed: () => _openEditForm(item),
+                                        ),
+                                        IconButton(
+                                          tooltip: 'Delete',
+                                          icon:
+                                              const Icon(Icons.delete_outline),
+                                          onPressed: () => _confirmDelete(item),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
+                          ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _buildSubtitle(Map<String, dynamic> item) {
+    final parts = <String>[];
+    for (final f in widget.entity.editableFields) {
+      final val = item[f.name];
+      if (val != null && val.toString().isNotEmpty) {
+        parts.add('${f.label}: $val');
+      }
+    }
+    for (final fk in widget.entity.foreignKeys) {
+      final relObj = item[fk.fieldName];
+      if (relObj is Map && relObj['id'] != null) {
+        parts.add('${fk.label}: #${relObj['id']}');
+      }
+    }
+    return parts.isEmpty ? 'Tap to view details' : parts.join(' • ');
+  }
+}

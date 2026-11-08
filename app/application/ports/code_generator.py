@@ -27,5 +27,13 @@ class SqlGeneratorPort(ABC):
         pass
 
 
+class MobileGeneratorPort(ABC):
+    @abstractmethod
+    def generate_mobile(self, document: CanonicalUmlDocument, output_dir: Path) -> Path:
+        """Generates a complete, runnable Flutter mobile project with a generic metadata-driven frontend.
+        Returns the path to the generated project directory.
+        """
+        pass
+
 
 

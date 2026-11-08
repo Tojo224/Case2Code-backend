@@ -1,0 +1,315 @@
+import 'package:flutter/material.dart';
+import '../config/app_schema.dart';
+import '../services/api_service.dart';
+import 'assistant_screen.dart';
+import 'entity_list_screen.dart';
+
+class HomeScreen extends StatefulWidget {
+  final ApiService apiService;
+  final VoidCallback onToggleTheme;
+
+  const HomeScreen({
+    super.key,
+    required this.apiService,
+    required this.onToggleTheme,
+  });
+
+  @override
+  State<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<HomeScreen> {
+  void _openServerSettingsDialog() {
+    final controller = TextEditingController(text: widget.apiService.baseUrl);
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Backend Server URL'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Configure the generated Spring Boot API base URL:',
+              style: TextStyle(fontSize: 13),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: controller,
+              decoration: const InputDecoration(
+                labelText: 'Base URL',
+                hintText: 'http://10.0.2.2:8080',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              children: [
+                ActionChip(
+                  label: const Text('Android Emulator (10.0.2.2)'),
+                  onPressed: () => controller.text = 'http://10.0.2.2:8080',
+                ),
+                ActionChip(
+                  label: const Text('Localhost (8080)'),
+                  onPressed: () => controller.text = 'http://localhost:8080',
+                ),
+              ],
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              setState(() {
+                widget.apiService.baseUrl = controller.text;
+              });
+              Navigator.of(ctx).pop();
+            },
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _openEntity(EntitySchema entity) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => EntityListScreen(
+          entity: entity,
+          apiService: widget.apiService,
+        ),
+      ),
+    );
+  }
+
+  void _openAssistant() {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => AssistantScreen(apiService: widget.apiService),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text(appProjectName),
+        actions: [
+          IconButton(
+            tooltip: 'Business Assistant (NLP)',
+            icon: const Icon(Icons.smart_toy_outlined),
+            onPressed: _openAssistant,
+          ),
+          IconButton(
+            tooltip: 'Server URL Settings',
+            icon: const Icon(Icons.settings_ethernet),
+            onPressed: _openServerSettingsDialog,
+          ),
+          IconButton(
+            tooltip: 'Toggle Light / Dark Theme',
+            icon: const Icon(Icons.brightness_6_outlined),
+            onPressed: widget.onToggleTheme,
+          ),
+        ],
+      ),
+      drawer: Drawer(
+        child: SafeArea(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              DrawerHeader(
+                decoration: BoxDecoration(
+                  color: colorScheme.primaryContainer,
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    Icon(
+                      Icons.storage_rounded,
+                      size: 32,
+                      color: colorScheme.onPrimaryContainer,
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      appProjectName,
+                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                            color: colorScheme.onPrimaryContainer,
+                            fontWeight: FontWeight.bold,
+                          ),
+                    ),
+                    Text(
+                      widget.apiService.baseUrl,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: colorScheme.onPrimaryContainer,
+                          ),
+                    ),
+                  ],
+                ),
+              ),
+              Expanded(
+                child: ListView(
+                  children: [
+                    for (final entity in appEntities)
+                      ListTile(
+                        leading: const Icon(Icons.table_chart_outlined),
+                        title: Text(entity.displayName),
+                        subtitle: Text('/api/${entity.endpointPath}'),
+                        onTap: () {
+                          Navigator.of(context).pop();
+                          _openEntity(entity);
+                        },
+                      ),
+                    const Divider(),
+                    ListTile(
+                      leading: const Icon(Icons.smart_toy_outlined),
+                      title: const Text('Business Assistant'),
+                      subtitle: const Text('Natural language operations'),
+                      onTap: () {
+                        Navigator.of(context).pop();
+                        _openAssistant();
+                      },
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: _openAssistant,
+        icon: const Icon(Icons.auto_awesome),
+        label: const Text('AI Assistant'),
+      ),
+      body: CustomScrollView(
+        slivers: [
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+              child: Card(
+                color: colorScheme.secondaryContainer,
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        appProjectDescription,
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                              color: colorScheme.onSecondaryContainer,
+                            ),
+                      ),
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [
+                          Icon(
+                            Icons.cloud_outlined,
+                            size: 16,
+                            color: colorScheme.onSecondaryContainer,
+                          ),
+                          const SizedBox(width: 6),
+                          Expanded(
+                            child: Text(
+                              'API: ${widget.apiService.baseUrl}',
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .labelMedium
+                                  ?.copyWith(
+                                    color: colorScheme.onSecondaryContainer,
+                                  ),
+                            ),
+                          ),
+                          TextButton(
+                            onPressed: _openServerSettingsDialog,
+                            child: const Text('Change'),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+          SliverPadding(
+            padding: const EdgeInsets.all(16),
+            sliver: SliverGrid(
+              gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+                maxCrossAxisExtent: 260,
+                mainAxisSpacing: 12,
+                crossAxisSpacing: 12,
+                childAspectRatio: 1.25,
+              ),
+              delegate: SliverChildBuilderDelegate(
+                (context, index) {
+                  final entity = appEntities[index];
+                  return Card(
+                    clipBehavior: Clip.antiAlias,
+                    child: InkWell(
+                      onTap: () => _openEntity(entity),
+                      child: Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                CircleAvatar(
+                                  backgroundColor: colorScheme.primaryContainer,
+                                  foregroundColor:
+                                      colorScheme.onPrimaryContainer,
+                                  child: const Icon(Icons.dataset_outlined),
+                                ),
+                                if (entity.superClass != null)
+                                  Chip(
+                                    label: Text('extends ${entity.superClass}'),
+                                    visualDensity: VisualDensity.compact,
+                                  ),
+                              ],
+                            ),
+                            Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  entity.displayName,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .titleMedium
+                                      ?.copyWith(fontWeight: FontWeight.bold),
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  '${entity.editableFields.length} fields • ${entity.foreignKeys.length + entity.childCollections.length} relations',
+                                  style: Theme.of(context).textTheme.bodySmall,
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  );
+                },
+                childCount: appEntities.length,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}

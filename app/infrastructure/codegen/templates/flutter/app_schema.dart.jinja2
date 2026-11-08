@@ -1,0 +1,159 @@
+enum FieldKind {
+  string,
+  text,
+  integer,
+  decimal,
+  boolean,
+  date,
+  dateTime,
+}
+
+class FieldSchema {
+  final String name;
+  final String label;
+  final String umlType;
+  final FieldKind kind;
+  final bool isPrimaryKey;
+  final bool required;
+
+  const FieldSchema({
+    required this.name,
+    required this.label,
+    required this.umlType,
+    required this.kind,
+    this.isPrimaryKey = false,
+    this.required = false,
+  });
+}
+
+class ForeignKeySchema {
+  final String fieldName;
+  final String label;
+  final String targetEntityName;
+  final String targetEndpointPath;
+  final String relationshipType;
+
+  const ForeignKeySchema({
+    required this.fieldName,
+    required this.label,
+    required this.targetEntityName,
+    required this.targetEndpointPath,
+    required this.relationshipType,
+  });
+}
+
+class ChildCollectionSchema {
+  final String fieldName;
+  final String label;
+  final String targetEntityName;
+  final String targetEndpointPath;
+  final String mappedByField;
+
+  const ChildCollectionSchema({
+    required this.fieldName,
+    required this.label,
+    required this.targetEntityName,
+    required this.targetEndpointPath,
+    required this.mappedByField,
+  });
+}
+
+class EntitySchema {
+  final String name;
+  final String displayName;
+  final String tableName;
+  final String endpointPath;
+  final String primaryKeyField;
+  final String? superClass;
+  final List<FieldSchema> fields;
+  final List<ForeignKeySchema> foreignKeys;
+  final List<ChildCollectionSchema> childCollections;
+
+  const EntitySchema({
+    required this.name,
+    required this.displayName,
+    required this.tableName,
+    required this.endpointPath,
+    required this.primaryKeyField,
+    this.superClass,
+    required this.fields,
+    required this.foreignKeys,
+    required this.childCollections,
+  });
+
+  List<FieldSchema> get editableFields =>
+      fields.where((f) => !f.isPrimaryKey).toList();
+}
+
+const String appProjectName = '{{ project_name | replace("'", "\\'") }}';
+const String appProjectDescription = '{{ description | replace("'", "\\'") }}';
+
+const List<EntitySchema> appEntities = [
+{% for entity in entities %}
+  EntitySchema(
+    name: '{{ entity.name }}',
+    displayName: '{{ entity.display_name }}',
+    tableName: '{{ entity.table_name }}',
+    endpointPath: '{{ entity.endpoint_path }}',
+    primaryKeyField: '{{ entity.pk_field }}',
+    superClass: {% if entity.super_class %}'{{ entity.super_class }}'{% else %}null{% endif %},
+    fields: [
+{% for f in entity.all_fields %}
+      FieldSchema(
+        name: '{{ f.name }}',
+        label: '{{ f.label }}',
+        umlType: '{{ f.uml_type }}',
+        kind: FieldKind.{{ f.field_kind }},
+        isPrimaryKey: {{ "true" if f.primary_key else "false" }},
+        required: {{ "true" if f.required else "false" }},
+      ),
+{% endfor %}
+    ],
+    foreignKeys: [
+{% for fk in entity.foreign_keys %}
+      ForeignKeySchema(
+        fieldName: '{{ fk.field_name }}',
+        label: '{{ fk.label }}',
+        targetEntityName: '{{ fk.target_entity }}',
+        targetEndpointPath: '{{ fk.target_endpoint_path }}',
+        relationshipType: '{{ fk.relationship_type }}',
+      ),
+{% endfor %}
+    ],
+    childCollections: [
+{% for col in entity.child_collections %}
+      ChildCollectionSchema(
+        fieldName: '{{ col.field_name }}',
+        label: '{{ col.label }}',
+        targetEntityName: '{{ col.target_entity }}',
+        targetEndpointPath: '{{ col.target_endpoint_path }}',
+        mappedByField: '{{ col.mapped_by }}',
+      ),
+{% endfor %}
+    ],
+  ),
+{% endfor %}
+];
+
+EntitySchema? findEntityByName(String name) {
+  for (final entity in appEntities) {
+    if (entity.name.toLowerCase() == name.toLowerCase()) {
+      return entity;
+    }
+  }
+  return null;
+}
+
+String recordDisplayLabel(EntitySchema schema, Map<String, dynamic> record) {
+  final pkVal = record[schema.primaryKeyField];
+  for (final f in schema.fields) {
+    if (!f.isPrimaryKey &&
+        (f.kind == FieldKind.string || f.kind == FieldKind.text)) {
+      final val = record[f.name];
+      if (val != null && val.toString().trim().isNotEmpty) {
+        return pkVal != null ? '$val (#$pkVal)' : val.toString();
+      }
+    }
+  }
+  return '${schema.displayName} #${pkVal ?? "?"}';
+}

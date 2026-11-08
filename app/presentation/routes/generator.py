@@ -15,6 +15,7 @@ from app.infrastructure.codegen.compilation_verifier import (
     CompilationError,
     CompilationVerifier,
 )
+from app.infrastructure.codegen.flutter_generator import FlutterGenerator
 from app.infrastructure.codegen.spring_boot_generator import SpringBootGenerator
 from app.infrastructure.codegen.sql_generator import SqlGenerator
 from app.infrastructure.persistence.diagram_repository import SqlAlchemyDiagramRepository
@@ -170,4 +171,35 @@ def generate_backend(
         filename=f"{Path(zip_file).name}",
     )
 
+
+@router.post("/{diagram_id}/generate/mobile")
+def generate_mobile_app(
+    diagram_id: str,
+    repo: SqlAlchemyDiagramRepository = Depends(get_repository),
+    user_repo: SqlAlchemyUserRepository = Depends(get_user_repo),
+    current_user: Optional[User] = Depends(get_current_user_optional),
+):
+    document = _get_authorized_diagram(diagram_id, repo, user_repo, current_user)
+
+    if not document.classes:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Diagram must contain at least one class to generate mobile application code.",
+        )
+
+    temp_dir = Path(tempfile.mkdtemp(prefix="case2code_mobile_"))
+    generator = FlutterGenerator()
+    project_dir = generator.generate_mobile(document, temp_dir)
+
+    safe_name = re.sub(r"[^a-zA-Z0-9_\-]", "_", (document.name or "case2code").strip()) or "case2code"
+    zip_base_name = temp_dir.parent / f"{safe_name}_flutter_mobile"
+    zip_file = shutil.make_archive(str(zip_base_name), "zip", project_dir)
+
+    shutil.rmtree(temp_dir, ignore_errors=True)
+
+    return FileResponse(
+        zip_file,
+        media_type="application/zip",
+        filename=f"{Path(zip_file).name}",
+    )
 

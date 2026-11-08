@@ -1,0 +1,53 @@
+import 'package:flutter/material.dart';
+import 'screens/home_screen.dart';
+import 'services/api_service.dart';
+
+void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+  runApp(const Case2CodeMobileApp());
+}
+
+class Case2CodeMobileApp extends StatefulWidget {
+  const Case2CodeMobileApp({super.key});
+
+  @override
+  State<Case2CodeMobileApp> createState() => _Case2CodeMobileAppState();
+}
+
+class _Case2CodeMobileAppState extends State<Case2CodeMobileApp> {
+  final ApiService _apiService = ApiService();
+  ThemeMode _themeMode = ThemeMode.system;
+
+  void _toggleTheme() {
+    setState(() {
+      _themeMode = _themeMode == ThemeMode.dark ? ThemeMode.light : ThemeMode.dark;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: '{{ project_name | replace("'", "\\'") }}',
+      debugShowCheckedModeBanner: false,
+      themeMode: _themeMode,
+      theme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: const Color(0xFF0284C7),
+          brightness: Brightness.light,
+        ),
+        useMaterial3: true,
+      ),
+      darkTheme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: const Color(0xFF38BDF8),
+          brightness: Brightness.dark,
+        ),
+        useMaterial3: true,
+      ),
+      home: HomeScreen(
+        apiService: _apiService,
+        onToggleTheme: _toggleTheme,
+      ),
+    );
+  }
+}

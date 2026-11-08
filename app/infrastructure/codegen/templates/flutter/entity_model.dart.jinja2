@@ -1,0 +1,49 @@
+class {{ entity.name }} {
+{% for f in entity.all_fields %}
+  final {{ f.dart_type }}{% if not f.required or f.primary_key %}?{% endif %} {{ f.name }};
+{% endfor %}
+{% for fk in entity.foreign_keys %}
+  final dynamic {{ fk.field_name }}Id;
+{% endfor %}
+
+  const {{ entity.name }}({
+{% for f in entity.all_fields %}
+    {% if f.required and not f.primary_key %}required {% endif %}this.{{ f.name }},
+{% endfor %}
+{% for fk in entity.foreign_keys %}
+    this.{{ fk.field_name }}Id,
+{% endfor %}
+  });
+
+  factory {{ entity.name }}.fromJson(Map<String, dynamic> json) {
+    return {{ entity.name }}(
+{% for f in entity.all_fields %}
+      {{ f.name }}: {{ f.from_json_expr }},
+{% endfor %}
+{% for fk in entity.foreign_keys %}
+      {{ fk.field_name }}Id: json['{{ fk.field_name }}'] is Map
+          ? json['{{ fk.field_name }}']['id']
+          : json['{{ fk.field_name }}_id'],
+{% endfor %}
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final Map<String, dynamic> data = {
+{% for f in entity.all_fields %}
+{% if not f.primary_key %}
+      '{{ f.name }}': {{ f.name }},
+{% endif %}
+{% endfor %}
+    };
+    if ({{ entity.pk_field }} != null) {
+      data['{{ entity.pk_field }}'] = {{ entity.pk_field }};
+    }
+{% for fk in entity.foreign_keys %}
+    if ({{ fk.field_name }}Id != null) {
+      data['{{ fk.field_name }}'] = {'id': {{ fk.field_name }}Id};
+    }
+{% endfor %}
+    return data;
+  }
+}
