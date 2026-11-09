@@ -20,6 +20,7 @@ class ChatMessage(BaseModel):
     addressed_to: Optional[str] = None
     ai_engine: Optional[str] = None
     executed_commands: Optional[List[Dict[str, Any]]] = None
+    suggested_commands: Optional[List[Dict[str, Any]]] = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 

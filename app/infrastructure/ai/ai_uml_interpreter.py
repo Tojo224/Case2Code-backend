@@ -223,8 +223,17 @@ class AiUmlInterpreter:
                 raw["name"] = sanitized_name
                 if not raw.get("class_id"):
                     raw["class_id"] = f"cls-{uuid.uuid4().hex[:8]}"
-                class_id = raw["class_id"]
+                proposed_id = str(raw["class_id"])
 
+                # If class already exists on the diagram or earlier in batch, map ID and skip duplicate creation
+                existing_id = name_to_class_id.get(sanitized_name.lower()) or name_to_class_id.get(raw_name.lower())
+                if existing_id:
+                    name_to_class_id[proposed_id.lower()] = existing_id
+                    name_to_class_id[raw_name.lower()] = existing_id
+                    name_to_class_id[sanitized_name.lower()] = existing_id
+                    continue
+
+                class_id = proposed_id
                 name_to_class_id[raw_name.lower()] = class_id
                 name_to_class_id[sanitized_name.lower()] = class_id
                 name_to_class_id[raw_name.lower().replace(" ", "_")] = class_id

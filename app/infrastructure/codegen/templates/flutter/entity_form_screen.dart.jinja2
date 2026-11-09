@@ -1,0 +1,295 @@
+import 'package:flutter/material.dart';
+import '../config/app_schema.dart';
+import '../services/api_service.dart';
+
+class EntityFormScreen extends StatefulWidget {
+  final EntitySchema entity;
+  final ApiService apiService;
+  final Map<String, dynamic>? initialRecord;
+  final Map<String, dynamic>? preselectedForeignKeys;
+
+  const EntityFormScreen({
+    super.key,
+    required this.entity,
+    required this.apiService,
+    this.initialRecord,
+    this.preselectedForeignKeys,
+  });
+
+  @override
+  State<EntityFormScreen> createState() => _EntityFormScreenState();
+}
+
+class _EntityFormScreenState extends State<EntityFormScreen> {
+  final _formKey = GlobalKey<FormState>();
+  final Map<String, TextEditingController> _controllers = {};
+  final Map<String, bool> _boolValues = {};
+  final Map<String, dynamic> _selectedFkIds = {};
+  final Map<String, List<Map<String, dynamic>>> _fkOptions = {};
+  bool _isSaving = false;
+
+  bool get _isEditing => widget.initialRecord != null;
+
+  @override
+  void initState() {
+    super.initState();
+    for (final field in widget.entity.editableFields) {
+      final initialVal = widget.initialRecord?[field.name];
+      if (field.kind == FieldKind.boolean) {
+        _boolValues[field.name] = initialVal == true ||
+            initialVal?.toString().toLowerCase() == 'true';
+      } else {
+        _controllers[field.name] = TextEditingController(
+          text: initialVal != null ? initialVal.toString() : '',
+        );
+      }
+    }
+
+    for (final fk in widget.entity.foreignKeys) {
+      final preselected = widget.preselectedForeignKeys?[fk.fieldName];
+      if (preselected != null) {
+        _selectedFkIds[fk.fieldName] = preselected;
+      } else {
+        final existingRel = widget.initialRecord?[fk.fieldName];
+        if (existingRel is Map && existingRel['id'] != null) {
+          _selectedFkIds[fk.fieldName] = existingRel['id'];
+        }
+      }
+    }
+
+    _loadForeignKeyOptions();
+  }
+
+  @override
+  void dispose() {
+    for (final ctrl in _controllers.values) {
+      ctrl.dispose();
+    }
+    super.dispose();
+  }
+
+  Future<void> _loadForeignKeyOptions() async {
+    for (final fk in widget.entity.foreignKeys) {
+      try {
+        final list = await widget.apiService.getAll(fk.targetEndpointPath);
+        if (mounted) {
+          setState(() {
+            _fkOptions[fk.fieldName] = list;
+          });
+        }
+      } catch (_) {}
+    }
+  }
+
+  Future<void> _pickDate(FieldSchema field, {required bool includeTime}) async {
+    final now = DateTime.now();
+    final pickedDate = await showDatePicker(
+      context: context,
+      initialDate: now,
+      firstDate: DateTime(1900),
+      lastDate: DateTime(2100),
+    );
+    if (pickedDate == null) return;
+
+    if (!includeTime) {
+      final formatted =
+          '${pickedDate.year.toString().padLeft(4, '0')}-${pickedDate.month.toString().padLeft(2, '0')}-${pickedDate.day.toString().padLeft(2, '0')}';
+      _controllers[field.name]?.text = formatted;
+      return;
+    }
+
+    final pickedTime = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay.fromDateTime(now),
+    );
+    final hour = (pickedTime?.hour ?? 0).toString().padLeft(2, '0');
+    final minute = (pickedTime?.minute ?? 0).toString().padLeft(2, '0');
+    final formatted =
+        '${pickedDate.year.toString().padLeft(4, '0')}-${pickedDate.month.toString().padLeft(2, '0')}-${pickedDate.day.toString().padLeft(2, '0')}T$hour:$minute:00';
+    _controllers[field.name]?.text = formatted;
+  }
+
+  Future<void> _submit() async {
+    if (!_formKey.currentState!.validate()) return;
+
+    setState(() => _isSaving = true);
+    final payload = <String, dynamic>{};
+
+    for (final field in widget.entity.editableFields) {
+      if (field.kind == FieldKind.boolean) {
+        payload[field.name] = _boolValues[field.name] ?? false;
+      } else {
+        final rawText = (_controllers[field.name]?.text ?? '').trim();
+        if (rawText.isEmpty) {
+          payload[field.name] = null;
+        } else if (field.kind == FieldKind.integer) {
+          payload[field.name] = int.tryParse(rawText);
+        } else if (field.kind == FieldKind.decimal) {
+          payload[field.name] = double.tryParse(rawText);
+        } else {
+          payload[field.name] = rawText;
+        }
+      }
+    }
+
+    for (final fk in widget.entity.foreignKeys) {
+      final selectedId = _selectedFkIds[fk.fieldName];
+      if (selectedId != null) {
+        payload[fk.fieldName] = {'id': selectedId};
+      }
+    }
+
+    try {
+      if (_isEditing) {
+        final id = widget.initialRecord![widget.entity.primaryKeyField];
+        await widget.apiService.update(
+          widget.entity.endpointPath,
+          id,
+          payload,
+        );
+      } else {
+        await widget.apiService.create(widget.entity.endpointPath, payload);
+      }
+      if (mounted) {
+        Navigator.of(context).pop(true);
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Save error: $e')),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isSaving = false);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(
+          _isEditing
+              ? 'Edit ${widget.entity.displayName}'
+              : 'New ${widget.entity.displayName}',
+        ),
+      ),
+      body: Form(
+        key: _formKey,
+        child: ListView(
+          padding: const EdgeInsets.all(16),
+          children: [
+            for (final field in widget.entity.editableFields)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 16),
+                child: _buildFieldInput(field),
+              ),
+            for (final fk in widget.entity.foreignKeys)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 16),
+                child: _buildForeignKeySelector(fk),
+              ),
+            const SizedBox(height: 12),
+            FilledButton.icon(
+              onPressed: _isSaving ? null : _submit,
+              icon: _isSaving
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.save_outlined),
+              label: Text(_isEditing ? 'Update Record' : 'Create Record'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildFieldInput(FieldSchema field) {
+    if (field.kind == FieldKind.boolean) {
+      return SwitchListTile(
+        title: Text(field.label),
+        subtitle: Text('Type: ${field.umlType}'),
+        value: _boolValues[field.name] ?? false,
+        onChanged: (val) => setState(() => _boolValues[field.name] = val),
+      );
+    }
+
+    final isNumeric =
+        field.kind == FieldKind.integer || field.kind == FieldKind.decimal;
+    final isDate =
+        field.kind == FieldKind.date || field.kind == FieldKind.dateTime;
+
+    return TextFormField(
+      controller: _controllers[field.name],
+      maxLines: field.kind == FieldKind.text ? 3 : 1,
+      keyboardType: isNumeric
+          ? const TextInputType.numberWithOptions(decimal: true)
+          : TextInputType.text,
+      decoration: InputDecoration(
+        labelText: '${field.label}${field.required ? " *" : ""}',
+        helperText: 'Type: ${field.umlType}',
+        border: const OutlineInputBorder(),
+        suffixIcon: isDate
+            ? IconButton(
+                icon: const Icon(Icons.calendar_today_outlined),
+                onPressed: () => _pickDate(
+                  field,
+                  includeTime: field.kind == FieldKind.dateTime,
+                ),
+              )
+            : null,
+      ),
+      validator: (val) {
+        final trimmed = (val ?? '').trim();
+        if (field.required && trimmed.isEmpty) {
+          return '${field.label} is required';
+        }
+        if (trimmed.isNotEmpty && field.kind == FieldKind.integer) {
+          if (int.tryParse(trimmed) == null) {
+            return 'Enter a valid integer number';
+          }
+        }
+        if (trimmed.isNotEmpty && field.kind == FieldKind.decimal) {
+          if (double.tryParse(trimmed) == null) {
+            return 'Enter a valid decimal number';
+          }
+        }
+        return null;
+      },
+    );
+  }
+
+  Widget _buildForeignKeySelector(ForeignKeySchema fk) {
+    final options = _fkOptions[fk.fieldName] ?? const [];
+    final targetSchema = findEntityByName(fk.targetEntityName);
+
+    return DropdownButtonFormField<dynamic>(
+      value: _selectedFkIds[fk.fieldName],
+      decoration: InputDecoration(
+        labelText: '${fk.label} (${fk.targetEntityName})',
+        border: const OutlineInputBorder(),
+      ),
+      items: [
+        const DropdownMenuItem<dynamic>(
+          value: null,
+          child: Text('— None —'),
+        ),
+        for (final opt in options)
+          DropdownMenuItem<dynamic>(
+            value: opt[targetSchema?.primaryKeyField ?? 'id'],
+            child: Text(
+              targetSchema != null
+                  ? recordDisplayLabel(targetSchema, opt)
+                  : '${fk.targetEntityName} #${opt['id']}',
+            ),
+          ),
+      ],
+      onChanged: (val) => setState(() => _selectedFkIds[fk.fieldName] = val),
+    );
+  }
+}

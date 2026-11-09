@@ -1,0 +1,139 @@
+import 'dart:convert';
+import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
+
+class ApiService {
+  String _baseUrl;
+
+  ApiService({String? initialBaseUrl})
+      : _baseUrl = initialBaseUrl ??
+            (kIsWeb ? 'http://localhost:8080' : 'http://10.0.2.2:8080');
+
+  String get baseUrl => _baseUrl;
+
+  set baseUrl(String value) {
+    final trimmed = value.trim();
+    if (trimmed.isNotEmpty) {
+      _baseUrl = trimmed.endsWith('/')
+          ? trimmed.substring(0, trimmed.length - 1)
+          : trimmed;
+    }
+  }
+
+  Map<String, String> get _headers => const {
+        'Content-Type': 'application/json; charset=UTF-8',
+        'Accept': 'application/json',
+      };
+
+  Future<List<Map<String, dynamic>>> getAll(String endpointPath) async {
+    final uri = Uri.parse('$_baseUrl/api/$endpointPath');
+    final response = await http.get(uri, headers: _headers);
+    if (response.statusCode >= 200 && response.statusCode < 300) {
+      final decoded = jsonDecode(utf8.decode(response.bodyBytes));
+      if (decoded is List) {
+        return decoded
+            .whereType<Map>()
+            .map((e) => Map<String, dynamic>.from(e))
+            .toList();
+      }
+      return [];
+    }
+    throw Exception('Failed to load $endpointPath (HTTP ${response.statusCode})');
+  }
+
+  Future<Map<String, dynamic>> getById(String endpointPath, dynamic id) async {
+    final uri = Uri.parse('$_baseUrl/api/$endpointPath/$id');
+    final response = await http.get(uri, headers: _headers);
+    if (response.statusCode >= 200 && response.statusCode < 300) {
+      final decoded = jsonDecode(utf8.decode(response.bodyBytes));
+      return Map<String, dynamic>.from(decoded as Map);
+    }
+    throw Exception('Failed to fetch record #$id (HTTP ${response.statusCode})');
+  }
+
+  Future<List<Map<String, dynamic>>> getChildren(
+    String childEndpointPath,
+    String byFieldName,
+    dynamic parentId,
+  ) async {
+    final uri =
+        Uri.parse('$_baseUrl/api/$childEndpointPath/by-$byFieldName/$parentId');
+    final response = await http.get(uri, headers: _headers);
+    if (response.statusCode >= 200 && response.statusCode < 300) {
+      final decoded = jsonDecode(utf8.decode(response.bodyBytes));
+      if (decoded is List) {
+        return decoded
+            .whereType<Map>()
+            .map((e) => Map<String, dynamic>.from(e))
+            .toList();
+      }
+      return [];
+    }
+    throw Exception(
+      'Failed to load related $childEndpointPath (HTTP ${response.statusCode})',
+    );
+  }
+
+  Future<Map<String, dynamic>> create(
+    String endpointPath,
+    Map<String, dynamic> payload,
+  ) async {
+    final uri = Uri.parse('$_baseUrl/api/$endpointPath');
+    final response = await http.post(
+      uri,
+      headers: _headers,
+      body: jsonEncode(payload),
+    );
+    if (response.statusCode >= 200 && response.statusCode < 300) {
+      final decoded = jsonDecode(utf8.decode(response.bodyBytes));
+      return Map<String, dynamic>.from(decoded as Map);
+    }
+    throw Exception(
+      'Create failed (HTTP ${response.statusCode}): ${response.body}',
+    );
+  }
+
+  Future<Map<String, dynamic>> update(
+    String endpointPath,
+    dynamic id,
+    Map<String, dynamic> payload,
+  ) async {
+    final uri = Uri.parse('$_baseUrl/api/$endpointPath/$id');
+    final response = await http.put(
+      uri,
+      headers: _headers,
+      body: jsonEncode(payload),
+    );
+    if (response.statusCode >= 200 && response.statusCode < 300) {
+      final decoded = jsonDecode(utf8.decode(response.bodyBytes));
+      return Map<String, dynamic>.from(decoded as Map);
+    }
+    throw Exception(
+      'Update failed (HTTP ${response.statusCode}): ${response.body}',
+    );
+  }
+
+  Future<void> delete(String endpointPath, dynamic id) async {
+    final uri = Uri.parse('$_baseUrl/api/$endpointPath/$id');
+    final response = await http.delete(uri, headers: _headers);
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception('Delete failed (HTTP ${response.statusCode})');
+    }
+  }
+
+  Future<Map<String, dynamic>> executeAssistantQuery(String query) async {
+    final uri = Uri.parse('$_baseUrl/api/assistant/execute');
+    final response = await http.post(
+      uri,
+      headers: _headers,
+      body: jsonEncode({'query': query}),
+    );
+    if (response.statusCode >= 200 && response.statusCode < 300) {
+      final decoded = jsonDecode(utf8.decode(response.bodyBytes));
+      return Map<String, dynamic>.from(decoded as Map);
+    }
+    throw Exception(
+      'Assistant error (HTTP ${response.statusCode}): ${response.body}',
+    );
+  }
+}

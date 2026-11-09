@@ -1,0 +1,192 @@
+import 'package:flutter/material.dart';
+import '../config/app_schema.dart';
+import '../services/api_service.dart';
+
+class AssistantScreen extends StatefulWidget {
+  final ApiService apiService;
+
+  const AssistantScreen({super.key, required this.apiService});
+
+  @override
+  State<AssistantScreen> createState() => _AssistantScreenState();
+}
+
+class _AssistantMessage {
+  final bool isUser;
+  final String text;
+  final dynamic payloadData;
+
+  const _AssistantMessage({
+    required this.isUser,
+    required this.text,
+    this.payloadData,
+  });
+}
+
+class _AssistantScreenState extends State<AssistantScreen> {
+  final TextEditingController _queryController = TextEditingController();
+  final List<_AssistantMessage> _messages = [
+    const _AssistantMessage(
+      isUser: false,
+      text:
+          'Welcome to the embedded NLP Business Assistant. Ask me to list, count, find, or create records in natural language.',
+    ),
+  ];
+  bool _isSending = false;
+
+  @override
+  void dispose() {
+    _queryController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _sendQuery([String? preset]) async {
+    final query = (preset ?? _queryController.text).trim();
+    if (query.isEmpty || _isSending) return;
+
+    if (preset == null) {
+      _queryController.clear();
+    }
+
+    setState(() {
+      _messages.add(_AssistantMessage(isUser: true, text: query));
+      _isSending = true;
+    });
+
+    try {
+      final res = await widget.apiService.executeAssistantQuery(query);
+      final message = (res['message'] ?? 'Operation executed.').toString();
+      setState(() {
+        _messages.add(
+          _AssistantMessage(
+            isUser: false,
+            text: message,
+            payloadData: res['data'],
+          ),
+        );
+      });
+    } catch (e) {
+      setState(() {
+        _messages.add(
+          _AssistantMessage(
+            isUser: false,
+            text: 'Error calling /api/assistant/execute: $e',
+          ),
+        );
+      });
+    } finally {
+      setState(() => _isSending = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final suggestions = <String>[
+      for (final entity in appEntities.take(4)) 'listar ${entity.tableName}',
+      for (final entity in appEntities.take(2)) 'contar ${entity.tableName}',
+    ];
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Business Assistant'),
+      ),
+      body: Column(
+        children: [
+          if (suggestions.isNotEmpty)
+            SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              child: Row(
+                children: [
+                  for (final s in suggestions)
+                    Padding(
+                      padding: const EdgeInsets.only(right: 8),
+                      child: ActionChip(
+                        label: Text(s),
+                        onPressed: () => _sendQuery(s),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          const Divider(height: 1),
+          Expanded(
+            child: ListView.builder(
+              padding: const EdgeInsets.all(16),
+              itemCount: _messages.length,
+              itemBuilder: (context, idx) {
+                final msg = _messages[idx];
+                return Align(
+                  alignment:
+                      msg.isUser ? Alignment.centerRight : Alignment.centerLeft,
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 420),
+                    child: Card(
+                      color: msg.isUser
+                          ? Theme.of(context).colorScheme.primaryContainer
+                          : Theme.of(context).colorScheme.surfaceContainerHigh,
+                      margin: const EdgeInsets.only(bottom: 12),
+                      child: Padding(
+                        padding: const EdgeInsets.all(12),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(msg.text),
+                            if (msg.payloadData != null) ...[
+                              const SizedBox(height: 8),
+                              Container(
+                                width: double.infinity,
+                                padding: const EdgeInsets.all(8),
+                                decoration: BoxDecoration(
+                                  color: Colors.black12,
+                                  borderRadius: BorderRadius.circular(6),
+                                ),
+                                child: Text(
+                                  msg.payloadData.toString(),
+                                  style: const TextStyle(
+                                    fontFamily: 'monospace',
+                                    fontSize: 12,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+          SafeArea(
+            top: false,
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _queryController,
+                      onSubmitted: (_) => _sendQuery(),
+                      decoration: const InputDecoration(
+                        hintText: 'Ask the Business Assistant...',
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  IconButton.filled(
+                    onPressed: _isSending ? null : () => _sendQuery(),
+                    icon: const Icon(Icons.send),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}

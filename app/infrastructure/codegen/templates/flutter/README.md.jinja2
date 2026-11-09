@@ -1,0 +1,52 @@
+# {{ project_name }} - Generated Flutter Mobile App
+
+{{ description }}
+
+Generated automatically by **Case2Code** with a hybrid **Typed Domain Model + Metadata-Driven Generic CRUD UI** architecture.
+
+---
+
+## Quick Start
+
+### 1. Prerequisites
+- **Flutter SDK 3.19+** (Dart 3.2+)
+- Running instance of the generated **Spring Boot Backend** on port `8080`
+
+### 2. Install Dependencies
+
+```bash
+flutter pub get
+```
+
+### 3. Run the Application
+
+```bash
+# Run on Android Emulator, iOS Simulator, Desktop, or Web
+flutter run
+```
+
+### 4. Backend Connection URL
+
+By default, the application uses:
+- **`http://10.0.2.2:8080`** on Android Emulator (maps to host `localhost:8080`)
+- **`http://localhost:8080`** on Web, iOS Simulator, Windows, macOS, and Linux
+
+You can change the backend URL at any time from the **Server Settings** icon in the top navigation bar without recompiling.
+
+---
+
+## Project Architecture
+
+- `assets/app-schema.json`: Machine-readable domain metadata exported from Case2Code.
+- `lib/config/app_schema.dart`: Compiled metadata descriptors for entities, fields, foreign keys, and `1:N` child collections.
+- `lib/models/`: Strongly-typed Dart domain classes with `fromJson` and `toJson` serialization:
+{% for entity in entities %}
+  - `lib/models/{{ entity.snake_name }}.dart` (`{{ entity.name }}`)
+{% endfor %}
+- `lib/services/api_service.dart`: REST HTTP client for CRUD operations, relational queries, and the NLP Business Assistant.
+- `lib/screens/`:
+  - `home_screen.dart`: Adaptive dashboard and navigation drawer across all domain entities.
+  - `entity_list_screen.dart`: Searchable, refreshable list with delete confirmation.
+  - `entity_detail_screen.dart`: Master-detail view displaying record attributes and related `1:N` child collections.
+  - `entity_form_screen.dart`: Dynamic type-aware form with date/time pickers, boolean switches, and foreign key dropdown selectors.
+  - `assistant_screen.dart`: Natural language Business Assistant chat connected to `POST /api/assistant/execute`.

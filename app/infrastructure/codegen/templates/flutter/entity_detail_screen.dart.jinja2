@@ -1,0 +1,259 @@
+import 'package:flutter/material.dart';
+import '../config/app_schema.dart';
+import '../services/api_service.dart';
+import 'entity_form_screen.dart';
+
+class EntityDetailScreen extends StatefulWidget {
+  final EntitySchema entity;
+  final Map<String, dynamic> record;
+  final ApiService apiService;
+
+  const EntityDetailScreen({
+    super.key,
+    required this.entity,
+    required this.record,
+    required this.apiService,
+  });
+
+  @override
+  State<EntityDetailScreen> createState() => _EntityDetailScreenState();
+}
+
+class _EntityDetailScreenState extends State<EntityDetailScreen> {
+  late Map<String, dynamic> _record;
+  final Map<String, List<Map<String, dynamic>>> _childrenByField = {};
+  bool _hasChanges = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _record = Map<String, dynamic>.from(widget.record);
+    _loadChildCollections();
+  }
+
+  Future<void> _reloadRecord() async {
+    final pk = _record[widget.entity.primaryKeyField];
+    if (pk == null) return;
+    try {
+      final fresh =
+          await widget.apiService.getById(widget.entity.endpointPath, pk);
+      setState(() {
+        _record = fresh;
+      });
+      await _loadChildCollections();
+    } catch (_) {}
+  }
+
+  Future<void> _loadChildCollections() async {
+    final pk = _record[widget.entity.primaryKeyField];
+    if (pk == null) return;
+
+    for (final col in widget.entity.childCollections) {
+      try {
+        final list = await widget.apiService.getChildren(
+          col.targetEndpointPath,
+          col.mappedByField,
+          pk,
+        );
+        if (mounted) {
+          setState(() {
+            _childrenByField[col.fieldName] = list;
+          });
+        }
+      } catch (_) {}
+    }
+  }
+
+  Future<void> _editRecord() async {
+    final updated = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => EntityFormScreen(
+          entity: widget.entity,
+          apiService: widget.apiService,
+          initialRecord: _record,
+        ),
+      ),
+    );
+    if (updated == true) {
+      _hasChanges = true;
+      await _reloadRecord();
+    }
+  }
+
+  Future<void> _addChildRecord(ChildCollectionSchema col) async {
+    final childSchema = findEntityByName(col.targetEntityName);
+    final pk = _record[widget.entity.primaryKeyField];
+    if (childSchema == null || pk == null) return;
+
+    final created = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => EntityFormScreen(
+          entity: childSchema,
+          apiService: widget.apiService,
+          preselectedForeignKeys: {col.mappedByField: pk},
+        ),
+      ),
+    );
+    if (created == true) {
+      _hasChanges = true;
+      await _loadChildCollections();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return PopScope(
+      canPop: true,
+      child: Scaffold(
+        appBar: AppBar(
+          title: Text(recordDisplayLabel(widget.entity, _record)),
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back),
+            onPressed: () => Navigator.of(context).pop(_hasChanges),
+          ),
+          actions: [
+            IconButton(
+              tooltip: 'Edit',
+              icon: const Icon(Icons.edit_outlined),
+              onPressed: _editRecord,
+            ),
+          ],
+        ),
+        body: ListView(
+          padding: const EdgeInsets.all(16),
+          children: [
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '${widget.entity.displayName} Attributes',
+                      style: Theme.of(context)
+                          .textTheme
+                          .titleMedium
+                          ?.copyWith(fontWeight: FontWeight.bold),
+                    ),
+                    const Divider(height: 24),
+                    for (final field in widget.entity.fields)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 6),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            SizedBox(
+                              width: 140,
+                              child: Text(
+                                field.label,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ),
+                            Expanded(
+                              child: Text(
+                                '${_record[field.name] ?? "—"}',
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    for (final fk in widget.entity.foreignKeys)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 6),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            SizedBox(
+                              width: 140,
+                              child: Text(
+                                fk.label,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ),
+                            Expanded(
+                              child: Text(_formatForeignKeyValue(fk)),
+                            ),
+                          ],
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            for (final col in widget.entity.childCollections)
+              Card(
+                margin: const EdgeInsets.only(bottom: 16),
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(
+                            '${col.label} (${(_childrenByField[col.fieldName] ?? const []).length})',
+                            style: Theme.of(context)
+                                .textTheme
+                                .titleMedium
+                                ?.copyWith(fontWeight: FontWeight.bold),
+                          ),
+                          TextButton.icon(
+                            onPressed: () => _addChildRecord(col),
+                            icon: const Icon(Icons.add, size: 18),
+                            label: Text('Add ${col.targetEntityName}'),
+                          ),
+                        ],
+                      ),
+                      const Divider(),
+                      if ((_childrenByField[col.fieldName] ?? const []).isEmpty)
+                        const Padding(
+                          padding: EdgeInsets.symmetric(vertical: 8),
+                          child: Text('No related records yet.'),
+                        )
+                      else
+                        for (final child
+                            in _childrenByField[col.fieldName] ?? const [])
+                          ListTile(
+                            dense: true,
+                            contentPadding: EdgeInsets.zero,
+                            leading: const Icon(Icons.subdirectory_arrow_right),
+                            title: Text(
+                              findEntityByName(col.targetEntityName) != null
+                                  ? recordDisplayLabel(
+                                      findEntityByName(col.targetEntityName)!,
+                                      child,
+                                    )
+                                  : child.toString(),
+                            ),
+                          ),
+                    ],
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  String _formatForeignKeyValue(ForeignKeySchema fk) {
+    final raw = _record[fk.fieldName];
+    if (raw is Map) {
+      final targetSchema = findEntityByName(fk.targetEntityName);
+      if (targetSchema != null) {
+        return recordDisplayLabel(
+          targetSchema,
+          Map<String, dynamic>.from(raw),
+        );
+      }
+      return '#${raw['id'] ?? "?"}';
+    }
+    return '—';
+  }
+}

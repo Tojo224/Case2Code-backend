@@ -44,15 +44,23 @@ class DatabaseSchemaParser:
 
     @classmethod
     def _parse_domain_presets(cls, text: str, current_uml: CanonicalUmlDocument) -> List[Dict[str, Any]]:
-        norm = text.lower().strip()
+        norm = re.sub(r"^(?:@(?:ai|senior|bot)|/ai)\b[\s,:;-]*", "", text.lower().strip())
         domain_intent = re.search(
-            r"(?:(?:crea(?:r)?|nueva|dise[ñn]a(?:r)?|genera(?:r)?)\s+(?:una\s+)?(?:base\s+de\s+datos|sistema|modelo|esquema)\s+(?:de\s+|para\s+(?:una?\s+)?|en\s+)|(?:base\s+de\s+datos|sistema|modelo)\s+(?:de\s+|para\s+(?:una?\s+)?))([a-z0-9_\s-]+)",
+            r"(?:(?:crea(?:r|á|me)?|nueva|nuevo|dise[ñn]a(?:r|me)?|genera(?:r|me)?|hace(?:r|me)?|hac[eé](?:me)?|hagas|haz(?:me)?|arma(?:r|me)?|arm[aá](?:me)?|modela(?:r|me)?|construye|construir|quiero|necesito)\s+.*?(?:base\s+de\s+datos|sistema|modelo|esquema|diagrama|estructura|tablas)?\s*(?:b[aá]sica\s+|b[aá]sico\s+|completa\s+|completo\s+|simple\s+)?(?:de\s+|para\s+(?:una?\s+)?|en\s+|sobre\s+)?|(?:base\s+de\s+datos|sistema|modelo|esquema|diagrama)\s+(?:b[aá]sica\s+|b[aá]sico\s+|completa\s+|completo\s+|simple\s+)?(?:de\s+|para\s+(?:una?\s+)?|sobre\s+))([a-z0-9_\s-]+)",
             norm,
         )
-        if not domain_intent:
-            return []
+        topic = domain_intent.group(1).strip() if domain_intent else norm
 
-        topic = domain_intent.group(1).strip()
+        # Only trigger preset if there is a creation/modeling verb or explicit schema/database request
+        has_build_cue = bool(
+            domain_intent
+            or re.search(
+                r"\b(crea|nueva|nuevo|dise[ñn]a|genera|hace|hac[eé]|hagas|haz|arma|arm[aá]|modela|construye|base\s+de\s+datos|esquema|modelo|sistema|diagrama|tablas)\b",
+                norm,
+            )
+        )
+        if not has_build_cue:
+            return []
 
         # 1. Veterinaria
         if any(w in topic for w in ["veterinaria", "mascota", "animal"]):
@@ -89,7 +97,7 @@ class DatabaseSchemaParser:
             ], current_uml)
 
         # 3. E-commerce / Tienda
-        if any(w in topic for w in ["tienda", "ecommerce", "e-commerce", "compras", "ventas", "pedido"]):
+        if any(w in topic for w in ["tienda", "ecommerce", "e-commerce", "ecomerce", "e comerce", "comercio electronico", "comercio electrónico", "carrito", "compras", "ventas", "pedido"]):
             return cls._build_preset_commands([
                 ("Cliente", [("nombre", "String"), ("email", "String"), ("direccion", "String"), ("telefono", "String")]),
                 ("Pedido", [("fecha", "LocalDateTime"), ("total", "Double"), ("estado", "String")]),
@@ -104,7 +112,7 @@ class DatabaseSchemaParser:
             ], current_uml)
 
         # 4. Universidad / Escuela / Colegio
-        if any(w in topic for w in ["universidad", "colegio", "escuela", "instituto", "educativo", "academico"]):
+        if any(w in topic for w in ["universidad", "colegio", "escuela", "instituto", "educativo", "academico", "académico"]):
             return cls._build_preset_commands([
                 ("Estudiante", [("nombre", "String"), ("legajo", "String"), ("email", "String")]),
                 ("Profesor", [("nombre", "String"), ("titulo", "String"), ("email", "String")]),
@@ -119,7 +127,7 @@ class DatabaseSchemaParser:
             ], current_uml)
 
         # 5. Biblioteca
-        if any(w in topic for w in ["biblioteca", "libro", "prestamo"]):
+        if any(w in topic for w in ["biblioteca", "libro", "prestamo", "préstamo"]):
             return cls._build_preset_commands([
                 ("Usuario", [("nombre", "String"), ("dni", "String"), ("email", "String")]),
                 ("Libro", [("titulo", "String"), ("isbn", "String"), ("editorial", "String"), ("anio", "Integer")]),
@@ -133,6 +141,51 @@ class DatabaseSchemaParser:
                 ("Libro", "Prestamo", RelationshipTypeEnum.ONE_TO_MANY, "1", "*"),
             ], current_uml)
 
+        # 6. Hospital / Clínica Médica
+        if any(w in topic for w in ["hospital", "clinica", "clínica", "medico", "médico", "paciente", "consultorio", "salud"]):
+            return cls._build_preset_commands([
+                ("Paciente", [("nombre", "String"), ("documento", "String"), ("fechaNacimiento", "LocalDate"), ("telefono", "String")]),
+                ("Medico", [("nombre", "String"), ("matricula", "String"), ("email", "String")]),
+                ("Especialidad", [("nombre", "String"), ("descripcion", "String")]),
+                ("CitaMedica", [("fechaHora", "LocalDateTime"), ("motivo", "String"), ("estado", "String")]),
+                ("HistorialClinico", [("diagnostico", "String"), ("tratamiento", "String"), ("fecha", "LocalDate")]),
+            ], [
+                ("Especialidad", "Medico", RelationshipTypeEnum.ONE_TO_MANY, "1", "*"),
+                ("Paciente", "CitaMedica", RelationshipTypeEnum.ONE_TO_MANY, "1", "*"),
+                ("Medico", "CitaMedica", RelationshipTypeEnum.ONE_TO_MANY, "1", "*"),
+                ("Paciente", "HistorialClinico", RelationshipTypeEnum.ONE_TO_MANY, "1", "*"),
+            ], current_uml)
+
+        # 7. Restaurante / Gastronomía
+        if any(w in topic for w in ["restaurante", "restaurant", "comida", "gastronomia", "gastronomía", "menu", "menú"]):
+            return cls._build_preset_commands([
+                ("Mesa", [("numero", "Integer"), ("capacidad", "Integer"), ("ubicacion", "String")]),
+                ("CategoriaPlato", [("nombre", "String"), ("descripcion", "String")]),
+                ("Plato", [("nombre", "String"), ("precio", "Double"), ("disponible", "Boolean")]),
+                ("Orden", [("fechaHora", "LocalDateTime"), ("estado", "String"), ("total", "Double")]),
+                ("DetalleOrden", [("cantidad", "Integer"), ("precioUnitario", "Double"), ("notas", "String")]),
+            ], [
+                ("CategoriaPlato", "Plato", RelationshipTypeEnum.ONE_TO_MANY, "1", "*"),
+                ("Mesa", "Orden", RelationshipTypeEnum.ONE_TO_MANY, "1", "*"),
+                ("Orden", "DetalleOrden", RelationshipTypeEnum.ONE_TO_MANY, "1", "*"),
+                ("Plato", "DetalleOrden", RelationshipTypeEnum.ONE_TO_MANY, "1", "*"),
+            ], current_uml)
+
+        # 8. Inventario / Almacén
+        if any(w in topic for w in ["inventario", "almacen", "almacén", "bodega", "stock", "logistica", "logística"]):
+            return cls._build_preset_commands([
+                ("Proveedor", [("nombre", "String"), ("telefono", "String"), ("email", "String")]),
+                ("Categoria", [("nombre", "String"), ("descripcion", "String")]),
+                ("Producto", [("codigo", "String"), ("nombre", "String"), ("precio", "Double"), ("stockActual", "Integer")]),
+                ("Almacen", [("nombre", "String"), ("ubicacion", "String")]),
+                ("MovimientoStock", [("tipo", "String"), ("cantidad", "Integer"), ("fecha", "LocalDateTime")]),
+            ], [
+                ("Categoria", "Producto", RelationshipTypeEnum.ONE_TO_MANY, "1", "*"),
+                ("Proveedor", "Producto", RelationshipTypeEnum.ONE_TO_MANY, "1", "*"),
+                ("Producto", "MovimientoStock", RelationshipTypeEnum.ONE_TO_MANY, "1", "*"),
+                ("Almacen", "MovimientoStock", RelationshipTypeEnum.ONE_TO_MANY, "1", "*"),
+            ], current_uml)
+
         return []
 
     @classmethod
@@ -143,21 +196,35 @@ class DatabaseSchemaParser:
         current_uml: CanonicalUmlDocument,
     ) -> List[Dict[str, Any]]:
         cmds = []
-        class_id_map = {}
+        class_id_map = {c.name.lower(): c.id for c in current_uml.classes}
+        existing_attrs_map = {
+            c.id: {a.name.lower() for a in c.attributes} for c in current_uml.classes
+        }
         existing_count = len(current_uml.classes)
+        created_idx = 0
 
-        for idx, (cls_name, attrs) in enumerate(classes):
-            c_id = f"cls-{uuid.uuid4().hex[:8]}"
-            class_id_map[cls_name.lower()] = c_id
-            col = (existing_count + idx) % 3
-            row = (existing_count + idx) // 3
-            cmds.append({
-                "command_type": CommandTypeEnum.CREATE_CLASS.value,
-                "class_id": c_id,
-                "name": cls_name,
-                "position": {"x": float(80 + col * 320), "y": float(80 + row * 280)},
-            })
+        for cls_name, attrs in classes:
+            lower_name = cls_name.lower()
+            if lower_name in class_id_map:
+                c_id = class_id_map[lower_name]
+                known_attrs = existing_attrs_map.get(c_id, set())
+            else:
+                c_id = f"cls-{uuid.uuid4().hex[:8]}"
+                class_id_map[lower_name] = c_id
+                known_attrs = {"id"}
+                col = (existing_count + created_idx) % 3
+                row = (existing_count + created_idx) // 3
+                created_idx += 1
+                cmds.append({
+                    "command_type": CommandTypeEnum.CREATE_CLASS.value,
+                    "class_id": c_id,
+                    "name": cls_name,
+                    "position": {"x": float(80 + col * 320), "y": float(80 + row * 280)},
+                })
+
             for attr_name, attr_type in attrs:
+                if attr_name.lower() in known_attrs:
+                    continue
                 cmds.append({
                     "command_type": CommandTypeEnum.ADD_ATTRIBUTE.value,
                     "class_id": c_id,
@@ -973,7 +1040,12 @@ class RuleBasedAiProvider(AiProviderPort):
         image_data: Optional[Dict[str, str]] = None,
     ) -> List[Dict[str, Any]]:
         commands: List[Dict[str, Any]] = []
-        normalized_prompt = prompt.strip()
+        normalized_prompt = re.sub(
+            r"^(?:@(?:ai|senior|bot)|/ai)\b[\s,:;-]*",
+            "",
+            prompt.strip(),
+            flags=re.IGNORECASE,
+        ).strip()
 
         # 0. Check for Database Schema (SQL DDL, relational schema notation, or tables list)
         schema_cmds = DatabaseSchemaParser.parse(normalized_prompt, current_uml)
@@ -983,7 +1055,7 @@ class RuleBasedAiProvider(AiProviderPort):
         # 1. CREATE CLASS (with optional attributes: "Crea la clase Cliente con atributos id de tipo Long, nombre de tipo String")
         # Match class creation
         create_class_match = re.search(
-            r"(?:crea(?:r)?|nueva|agregar?|add|create|new)\s+(?:la\s+|una\s+)?(?:clase|tabla|entidad)\s+(?:llamada\s+)?([A-Za-z0-9_]+)(?:\s+(?:con\s+atributos?|con\s+campos?|con\s+columnas?|with\s+attributes?|con)\s+(.*))?",
+            r"(?:crea(?:r|á|me)?|nueva|nuevo|agregar?|agreg[aá](?:me)?|hace(?:r|me)?|hac[eé](?:me)?|hagas|haz(?:me)?|arma(?:r|me)?|arm[aá](?:me)?|dise[ñn]a(?:r|me)?|genera(?:r|me)?|add|create|new)\s+(?:la\s+|una\s+|el\s+|un\s+)?(?:clase|tabla|entidad)\s+(?:llamada\s+)?([A-Za-z0-9_]+)(?:\s+(?:con\s+atributos?|con\s+campos?|con\s+columnas?|with\s+attributes?|con)\s+(.*))?",
             normalized_prompt,
             re.IGNORECASE,
         )

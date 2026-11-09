@@ -633,16 +633,23 @@ async def diagram_websocket(
                             user_msg.model_dump(mode="json"),
                         )
 
-                        # Trigger AI Senior Developer if addressed to AI or in active room mode
+                        # Trigger AI Senior Developer if addressed to AI or matching natural language command/question
                         content_lower = content.lower()
                         should_trigger_ai = (
                             "@ai" in content_lower
                             or "@senior" in content_lower
                             or "@bot" in content_lower
+                            or "/ai" in content_lower
                             or "senior" in content_lower
                             or "asistente" in content_lower
                             or msg.get("force_ai", False)
-                            or bool(re.search(r"^(¿|\?|crea|agrega|elimina|relaciona|cómo|como|que|qué|ayuda)", content_lower))
+                            or content_lower.endswith("?")
+                            or bool(
+                                re.search(
+                                    r"^(¿|\?|crea|agrega|elimina|borra|relaciona|conecta|renombra|diseña|diseñá|genera|arma|armá|hace|hacé|hagas|haz|modela|quiero|necesito|podrías|podrias|puedes|podés|podes|cómo|como|que|qué|cuál|cual|dices|crees|revisa|valida|explica|ayuda|hola|buenas|alo|aló)",
+                                    content_lower,
+                                )
+                            )
                         )
 
                         if should_trigger_ai:
@@ -680,6 +687,7 @@ async def diagram_websocket(
                                     )
 
                                 ai_msg_id = f"msg-{uuid.uuid4().hex[:8]}"
+                                suggested = senior_colleague_orchestrator.last_suggested_commands
                                 ai_msg = ChatMessage(
                                     id=ai_msg_id,
                                     diagram_id=diagram_id,
@@ -691,6 +699,7 @@ async def diagram_websocket(
                                     addressed_to=addressed_to or user.name,
                                     ai_engine=senior_colleague_orchestrator.last_used_engine,
                                     executed_commands=[c.model_dump(mode="json") for c in executed_commands] if executed_commands else None,
+                                    suggested_commands=[c.model_dump(mode="json") for c in suggested] if suggested else None,
                                 )
                                 chat_repo.add_message(ai_msg)
 
