@@ -18,6 +18,7 @@ from app.domain.models.commands import (
     DeleteRelationshipCommand,
     MoveClassCommand,
     RenameClassCommand,
+    RestoreClassCommand,
     UpdateAttributeCommand,
     UpdateRelationshipCommand,
 )
@@ -61,6 +62,24 @@ def handle_create_class(document: CanonicalUmlDocument, cmd: CreateClassCommand)
     )
 
     document.classes.append(new_class)
+    _touch_document(document)
+    return document
+
+
+def handle_restore_class(document: CanonicalUmlDocument, cmd: RestoreClassCommand) -> CanonicalUmlDocument:
+    UmlValidator.validate_restore_class(document, cmd)
+    document.classes.append(cmd.class_data.model_copy(deep=True))
+
+    class_ids = {c.id for c in document.classes}
+    rel_ids = {r.id for r in document.relationships}
+    for rel in cmd.relationships:
+        if rel.id in rel_ids:
+            continue
+        if rel.source_class_id not in class_ids or rel.target_class_id not in class_ids:
+            continue
+        document.relationships.append(rel.model_copy(deep=True))
+        rel_ids.add(rel.id)
+
     _touch_document(document)
     return document
 

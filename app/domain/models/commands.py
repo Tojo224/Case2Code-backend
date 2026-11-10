@@ -1,10 +1,12 @@
 from enum import Enum
-from typing import Annotated, Literal, Optional, Union
+from typing import Annotated, List, Literal, Optional, Union
 from pydantic import BaseModel, Field
 
 from app.domain.models.canonical_uml import (
     Position,
     RelationshipTypeEnum,
+    UmlClass,
+    UmlRelationship,
     VisibilityEnum,
 )
 
@@ -20,6 +22,7 @@ class CommandTypeEnum(str, Enum):
     CREATE_RELATIONSHIP = "CREATE_RELATIONSHIP"
     UPDATE_RELATIONSHIP = "UPDATE_RELATIONSHIP"
     DELETE_RELATIONSHIP = "DELETE_RELATIONSHIP"
+    RESTORE_CLASS = "RESTORE_CLASS"
 
 
 class BaseUmlCommand(BaseModel):
@@ -115,6 +118,12 @@ class DeleteRelationshipCommand(BaseUmlCommand):
     relationship_id: str
 
 
+class RestoreClassCommand(BaseUmlCommand):
+    command_type: Literal[CommandTypeEnum.RESTORE_CLASS] = CommandTypeEnum.RESTORE_CLASS
+    class_data: UmlClass
+    relationships: List[UmlRelationship] = Field(default_factory=list)
+
+
 UmlCommand = Annotated[
     Union[
         CreateClassCommand,
@@ -127,6 +136,7 @@ UmlCommand = Annotated[
         CreateRelationshipCommand,
         UpdateRelationshipCommand,
         DeleteRelationshipCommand,
+        RestoreClassCommand,
     ],
     Field(discriminator="command_type"),
 ]

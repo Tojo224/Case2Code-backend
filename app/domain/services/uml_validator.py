@@ -7,6 +7,7 @@ from app.domain.models.commands import (
     CreateClassCommand,
     CreateRelationshipCommand,
     RenameClassCommand,
+    RestoreClassCommand,
     UpdateAttributeCommand,
     UpdateRelationshipCommand,
 )
@@ -48,6 +49,16 @@ class UmlValidator:
         for cls_item in document.classes:
             if cls_item.name.lower() == cmd.name.strip().lower():
                 raise UmlValidationError(f"Class '{cmd.name}' already exists in diagram.")
+
+    @classmethod
+    def validate_restore_class(cls, document: CanonicalUmlDocument, cmd: RestoreClassCommand) -> None:
+        data = cmd.class_data
+        cls.validate_identifier(data.name, "Class name")
+        for cls_item in document.classes:
+            if cls_item.id == data.id:
+                raise UmlValidationError(f"Class with ID '{data.id}' already exists in diagram.")
+            if cls_item.name.lower() == data.name.strip().lower():
+                raise UmlValidationError(f"Class '{data.name}' already exists in diagram.")
 
     @classmethod
     def validate_rename_class(cls, document: CanonicalUmlDocument, cmd: RenameClassCommand) -> UmlClass:

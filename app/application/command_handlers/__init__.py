@@ -9,6 +9,7 @@ from app.application.command_handlers.uml_handlers import (
     handle_create_relationship,
     handle_update_relationship,
     handle_delete_relationship,
+    handle_restore_class,
 )
 
 __all__ = [
@@ -22,5 +23,6 @@ __all__ = [
     "handle_create_relationship",
     "handle_update_relationship",
     "handle_delete_relationship",
+    "handle_restore_class",
 ]
 

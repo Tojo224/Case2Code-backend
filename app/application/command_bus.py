@@ -7,6 +7,7 @@ from app.application.command_handlers.uml_handlers import (
     handle_delete_class,
     handle_delete_relationship,
     handle_move_class,
+    handle_restore_class,
     handle_rename_class,
     handle_update_attribute,
     handle_update_relationship,
@@ -43,6 +44,7 @@ class CommandBus:
             CommandTypeEnum.CREATE_RELATIONSHIP: handle_create_relationship,
             CommandTypeEnum.UPDATE_RELATIONSHIP: handle_update_relationship,
             CommandTypeEnum.DELETE_RELATIONSHIP: handle_delete_relationship,
+            CommandTypeEnum.RESTORE_CLASS: handle_restore_class,
         }
 
     def dispatch(self, document: CanonicalUmlDocument, command: UmlCommand) -> CanonicalUmlDocument:
