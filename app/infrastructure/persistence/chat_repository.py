@@ -33,10 +33,12 @@ class SqlAlchemyChatRepository:
         records = (
             self.db.query(DiagramChatMessageModel)
             .filter(DiagramChatMessageModel.diagram_id == diagram_id)
-            .order_by(DiagramChatMessageModel.created_at.asc())
+            .order_by(DiagramChatMessageModel.created_at.desc(), DiagramChatMessageModel.id.desc())
             .limit(limit)
             .all()
         )
+        # Newest N were fetched; hand them back oldest-first.
+        records.reverse()
         return [
             ChatMessage(
                 id=r.id,

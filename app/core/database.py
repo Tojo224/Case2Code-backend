@@ -82,6 +82,18 @@ def init_db() -> None:
     except Exception as e:
         logger.warning(f"Database migration notice: {e}")
 
+    # Existing databases predate the composite index (create_all skips existing tables).
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_diagram_chat_messages_diagram_created "
+                    "ON diagram_chat_messages (diagram_id, created_at)"
+                )
+            )
+    except Exception as e:
+        logger.warning(f"Chat index migration notice: {e}")
+
 
 def get_db() -> Generator[Session, None, None]:
     db = SessionLocal()
