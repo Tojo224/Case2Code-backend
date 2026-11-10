@@ -19,6 +19,7 @@ from app.infrastructure.ai.ai_context import (
 )
 from app.infrastructure.ai.ai_policy import (
     detect_topic,
+    fold,
     is_confirmation,
     is_generic_database_request,
     strip_mention,
@@ -54,6 +55,9 @@ class ColleagueResult:
     suggested_commands: List[UmlCommand] = field(default_factory=list)
     suggested_operations: List[Dict[str, Any]] = field(default_factory=list)
     engine: str = ""
+    # True when `executed_commands` replays a stored pending proposal: the caller
+    # clears it only after at least one command was actually applied.
+    consumed_pending: bool = False
 
 
 class _PrecomputedProvider(AiProviderPort):
@@ -291,6 +295,17 @@ class SeniorColleagueOrchestrator:
                 return ColleagueResult(
                     f"@{speaker.name}, {viewer_notice}", addressed_to, updated_doc=document, engine=rule_engine
                 )
+            base_version = mem.pending_base_version if mem else None
+            if base_version is not None and base_version != document.version:
+                # The diagram changed after the proposal was shown: never replay it blindly.
+                self._memory_call(memory, "clear_pending", diagram_id)
+                return ColleagueResult(
+                    f"@{speaker.name}, el diagrama cambió desde que te mostré esa propuesta, así que no la apliqué "
+                    "para no pisar cambios. Pedime de nuevo lo que querías armar y te la preparo sobre el estado actual.",
+                    addressed_to,
+                    updated_doc=document,
+                    engine=rule_engine,
+                )
             if normalized_mode != "PAIR_PROGRAMMER":
                 return ColleagueResult(
                     f"@{speaker.name}, estás en modo **Asesor**, así que no toco el diagrama. "
@@ -300,7 +315,6 @@ class SeniorColleagueOrchestrator:
                     suggested_commands=stored,
                     engine=rule_engine,
                 )
-            self._memory_call(memory, "clear_pending", diagram_id)
             if stored:
                 return ColleagueResult(
                     f"@{speaker.name}, aplico la propuesta que te mostré ({len(stored)} cambios).",
@@ -308,7 +322,9 @@ class SeniorColleagueOrchestrator:
                     executed_commands=stored,
                     updated_doc=document,
                     engine=rule_engine,
+                    consumed_pending=True,
                 )
+            self._memory_call(memory, "clear_pending", diagram_id)
             return ColleagueResult(
                 f"@{speaker.name}, la propuesta pendiente ya no es válida. Pedime de nuevo lo que querías armar.",
                 addressed_to,
@@ -366,8 +382,12 @@ class SeniorColleagueOrchestrator:
             reply_text += f"\n\n{viewer_notice}"
 
         suggested: List[UmlCommand] = []
+        # A domain word alone ("¿cómo ves la clase Paciente?") is NOT a request: only a
+        # mutation or an explicit design ask with a topic in THIS prompt projects a hologram.
         hologram_prompt = effective_prompt if is_mutation_intent else (
-            f"crea una base de datos para {detected_topic}" if detected_topic else None
+            f"crea una base de datos para {detected_topic}"
+            if detected_topic and self._is_design_ask(norm_prompt)
+            else None
         )
         if hologram_prompt:
             try:
@@ -400,6 +420,21 @@ class SeniorColleagueOrchestrator:
             updated_doc=document,
             suggested_commands=suggested,
             engine=engine,
+        )
+
+    @staticmethod
+    def _is_design_ask(text: str) -> bool:
+        """An explicit request to design/complete a model that is not a plain edit
+        ("qué tablas me faltan para un ecommerce", "ayudame a armar la base de un hotel")."""
+        norm = fold(strip_mention(text))
+        return any(
+            re.search(pat, norm)
+            for pat in (
+                r"\bque\s+(?:tablas|entidades|clases)\b.*\b(?:falta\w*|necesit\w+|hacen\s+falta|deberia\w*)",
+                r"\b(?:ayuda\w*|ayudame)\s+(?:a|con)\s+(?:armar|disenar|modelar|la\s+base|el\s+modelo|el\s+diseno)",
+                r"\bcomo\s+(?:modelo|modelarias|modelar|armo|armarias|disenarias|diseno)\b",
+                r"\b(?:necesito|quiero|queremos)\s+(?:una?\s+)?(?:base\s+de\s+datos|modelo|diagrama|esquema)\b",
+            )
         )
 
     def _has_mutation_intent(self, text: str) -> bool:

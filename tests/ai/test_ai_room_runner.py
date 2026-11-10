@@ -147,8 +147,108 @@ async def test_typing_is_turned_off_even_when_the_turn_fails(room):
         ai_mode="ADVISORY",
         orchestrator=Boom(),
     )
-    with pytest.raises(RuntimeError):
-        await task
+    await task  # the failure is handled inside the turn, not re-raised
     await asyncio.sleep(0)
     assert hub.typing == [True, False]
     assert task not in ai_room_runner._background_tasks
+    assert len(hub.chats) == 1 and "no pude completar" in hub.chats[0]["content"]
+
+
+async def test_ai_context_gets_the_latest_messages_and_drops_the_one_being_answered(room, diagram_repo):
+    from datetime import datetime, timedelta, timezone
+
+    from app.domain.models.chat import ChatMessage, SenderType
+    from app.infrastructure.persistence.chat_repository import SqlAlchemyChatRepository
+
+    chat = SqlAlchemyChatRepository(diagram_repo.db)
+    base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    for i in range(20):  # more than the 12-message window
+        chat.add_message(ChatMessage(
+            id=f"h-{i:03d}", diagram_id=room.id, sender_id="usr-1", sender_name="Ana",
+            sender_type=SenderType.USER, content=f"hist {i}", created_at=base + timedelta(seconds=i),
+        ))
+    chat.add_message(ChatMessage(
+        id="h-answered", diagram_id=room.id, sender_id=SPEAKER.id, sender_name="Ana",
+        sender_type=SenderType.USER, content="@ai que opinas de todo esto",
+        created_at=base + timedelta(seconds=100),
+    ))
+    provider = FakeProvider(chat_reply="Mi consejo.")
+
+    await _turn(room, provider, FakeHub(), content="@ai que opinas de todo esto", mode="ADVISORY")
+
+    sent = provider.chat_calls[0]["user"]
+    assert "hist 19" in sent and "hist 18" in sent  # latest messages are present
+    assert "hist 0" not in sent and "hist 8" not in sent  # oldest are not
+    # the answered message appears once (as the prompt), not duplicated in the history block
+    assert sent.count("que opinas de todo esto") == 1
+
+
+class _BoomOrchestrator(SeniorColleagueOrchestrator):
+    async def process_colleague_interaction(self, *a, **k):
+        raise RuntimeError("llm exploded")
+
+
+async def test_failed_turn_posts_a_spanish_error_reply_persisted_and_broadcast(room, diagram_repo):
+    from app.infrastructure.persistence.chat_repository import SqlAlchemyChatRepository
+
+    hub = FakeHub()
+    ai_msg = await run_ai_turn(
+        diagram_id=room.id, content="@ai hola", speaker=SPEAKER, can_edit=True, ai_mode="ADVISORY",
+        orchestrator=_BoomOrchestrator(), version_service_factory=lambda _s: FakeVersionService(), hub=hub,
+    )
+
+    assert ai_msg is not None and ai_msg.sender_id == ai_room_runner.AI_USER_ID
+    assert "@Ana" in ai_msg.content and "probá de nuevo" in ai_msg.content
+    assert [m["content"] for m in hub.chats] == [ai_msg.content]
+    diagram_repo.db.expire_all()
+    stored = SqlAlchemyChatRepository(diagram_repo.db).list_messages(room.id)
+    assert [m.content for m in stored] == [ai_msg.content]
+
+
+async def test_failure_while_applying_commands_also_answers_and_rolls_back(room, monkeypatch):
+    async def boom(**kwargs):
+        raise RuntimeError("apply exploded")
+
+    monkeypatch.setattr(ai_room_runner, "apply_planned_commands", boom)
+    hub = FakeHub()
+    ai_msg = await _turn(room, FakeProvider(commands=[CREATE_PRODUCTO]), hub)
+
+    assert ai_msg is not None and "no pude completar" in ai_msg.content
+    assert hub.documents == []  # nothing was broadcast as applied
+
+
+async def test_failure_reply_itself_never_raises(room):
+    class BrokenHub(FakeHub):
+        async def broadcast_chat_message(self, diagram_id, message):
+            raise RuntimeError("hub down")
+
+    result = await run_ai_turn(
+        diagram_id=room.id, content="@ai hola", speaker=SPEAKER, can_edit=True, ai_mode="ADVISORY",
+        orchestrator=_BoomOrchestrator(), version_service_factory=lambda _s: FakeVersionService(),
+        hub=BrokenHub(),
+    )
+    assert result is None  # swallowed and logged, not raised
+
+
+async def test_confirmed_proposal_is_cleared_only_after_a_successful_apply(room, diagram_repo):
+    from app.infrastructure.persistence.ai_memory_repository import SqlAlchemyAiMemoryRepository
+
+    memory = SqlAlchemyAiMemoryRepository(diagram_repo.db)
+    memory.save_pending(room.id, [CREATE_PRODUCTO], room.version, SPEAKER.id)
+
+    # 1) the replay fails (class already exists): the proposal must survive
+    await _human_adds_class(diagram_repo, room.id, "Producto")
+    memory.db.expire_all()
+    fresh = diagram_repo.get_by_id(room.id)
+    memory.save_pending(room.id, [CREATE_PRODUCTO], fresh.version, SPEAKER.id)
+    ai_msg = await _turn(room, FakeProvider(), FakeHub(), content="@ai hacelo")
+    assert "No pude aplicar" in ai_msg.content
+    memory.db.expire_all()
+    assert memory.get(room.id).pending_commands, "a failed apply must keep the proposal"
+
+    # 2) a replay that applies clears it
+    memory.save_pending(room.id, [CREATE_CLIENTE], fresh.version, SPEAKER.id)
+    ai_msg = await _turn(room, FakeProvider(), FakeHub(), content="@ai hacelo")
+    assert ai_msg.executed_commands
+    memory.db.expire_all()
+    assert memory.get(room.id).pending_commands is None

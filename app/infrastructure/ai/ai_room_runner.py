@@ -114,66 +114,142 @@ async def run_ai_turn(
     async with get_room_ai_lock(diagram_id):
         session = make_session()
         try:
-            diag_repo = SqlAlchemyDiagramRepository(session)
-            chat_repo = SqlAlchemyChatRepository(session)
-            memory = SqlAlchemyAiMemoryRepository(session)
-            version_service = make_versions(session)
-
-            document = diag_repo.get_by_id(diagram_id)
-            if document is None:
-                return None
-
-            history = chat_repo.list_messages(diagram_id, limit=12)
-            if history and history[-1].sender_id == speaker.id and history[-1].content.strip() == content.strip():
-                history = history[:-1]  # the message being answered is passed as the prompt itself
-
-            # No document lock here: this is the slow part (LLM).
-            result = await orchestrator.process_colleague_interaction(
-                prompt=content,
-                speaker=speaker,
-                active_users=hub.get_active_presences(diagram_id),
-                document=document,
-                chat_history=history,
-                ai_mode=ai_mode,
-                can_edit=can_edit,
-                memory=memory,
-                version_service=version_service,
-            )
-
-            reply = result.reply_text
-            applied: List[UmlCommand] = []
-            if result.executed_commands and can_edit:
-                reply, applied = await apply_planned_commands(
-                    session=session,
-                    diag_repo=diag_repo,
-                    version_service=version_service,
-                    hub=hub,
-                    diagram_id=diagram_id,
-                    prompt=content,
-                    planned=result.executed_commands,
-                    reply=reply,
-                    speaker_name=speaker.name,
-                )
-
-            ai_msg = ChatMessage(
-                id=f"msg-{uuid.uuid4().hex[:8]}",
+            return await _turn_body(
+                session=session,
                 diagram_id=diagram_id,
-                sender_id=AI_USER_ID,
-                sender_name=AI_NAME,
-                sender_avatar_color=AI_AVATAR_COLOR,
-                sender_type=SenderType.AI,
-                content=reply,
-                addressed_to=result.addressed_to or speaker.name,
-                ai_engine=result.engine or None,
-                executed_commands=[c.model_dump(mode="json") for c in applied] or None,
-                suggested_commands=[c.model_dump(mode="json") for c in result.suggested_commands] or None,
-                suggested_operations=list(result.suggested_operations) or None,
+                content=content,
+                speaker=speaker,
+                can_edit=can_edit,
+                ai_mode=ai_mode,
+                orchestrator=orchestrator,
+                version_service_factory=make_versions,
+                hub=hub,
             )
-            chat_repo.add_message(ai_msg)
-            await hub.broadcast_chat_message(diagram_id, ai_msg.model_dump(mode="json"))
-            return ai_msg
+        except Exception:
+            logger.exception("AI turn failed in room %s", diagram_id)
+            try:
+                session.rollback()
+            except Exception:
+                logger.warning("Rollback after failed AI turn also failed", exc_info=True)
+            return await _post_failure_reply(
+                diagram_id=diagram_id, speaker=speaker, hub=hub, session=session, make_session=make_session
+            )
         finally:
             session.close()
+
+
+async def _post_failure_reply(*, diagram_id: str, speaker: User, hub, session: Session, make_session) -> Optional[ChatMessage]:
+    """Tells the room the turn failed. Must never raise."""
+    ai_msg = ChatMessage(
+        id=f"msg-{uuid.uuid4().hex[:8]}",
+        diagram_id=diagram_id,
+        sender_id=AI_USER_ID,
+        sender_name=AI_NAME,
+        sender_avatar_color=AI_AVATAR_COLOR,
+        sender_type=SenderType.AI,
+        content=(
+            f"@{speaker.name}, no pude completar tu pedido por un error interno. "
+            "No modifiqué nada que no te haya confirmado; probá de nuevo en un momento."
+        ),
+        addressed_to=speaker.name,
+    )
+    try:
+        try:
+            SqlAlchemyChatRepository(session).add_message(ai_msg)
+        except Exception:
+            # The failed session may be unusable: retry once on a fresh one.
+            logger.warning("Could not persist AI failure reply on the turn session", exc_info=True)
+            fresh = make_session()
+            try:
+                SqlAlchemyChatRepository(fresh).add_message(ai_msg)
+            finally:
+                fresh.close()
+        await hub.broadcast_chat_message(diagram_id, ai_msg.model_dump(mode="json"))
+        return ai_msg
+    except Exception:
+        logger.error("Could not deliver AI failure reply", exc_info=True)
+        return None
+
+
+async def _turn_body(
+    *,
+    session: Session,
+    diagram_id: str,
+    content: str,
+    speaker: User,
+    can_edit: bool,
+    ai_mode: str,
+    orchestrator: SeniorColleagueOrchestrator,
+    version_service_factory: version_tools.VersionServiceFactory,
+    hub,
+) -> Optional[ChatMessage]:
+    make_versions = version_service_factory
+    diag_repo = SqlAlchemyDiagramRepository(session)
+    chat_repo = SqlAlchemyChatRepository(session)
+    memory = SqlAlchemyAiMemoryRepository(session)
+    version_service = make_versions(session)
+
+    document = diag_repo.get_by_id(diagram_id)
+    if document is None:
+        return None
+
+    history = chat_repo.list_messages(diagram_id, limit=12)
+    if history and history[-1].sender_id == speaker.id and history[-1].content.strip() == content.strip():
+        history = history[:-1]  # the message being answered is passed as the prompt itself
+
+    # No document lock here: this is the slow part (LLM).
+    result = await orchestrator.process_colleague_interaction(
+        prompt=content,
+        speaker=speaker,
+        active_users=hub.get_active_presences(diagram_id),
+        document=document,
+        chat_history=history,
+        ai_mode=ai_mode,
+        can_edit=can_edit,
+        memory=memory,
+        version_service=version_service,
+    )
+
+    reply = result.reply_text
+    applied: List[UmlCommand] = []
+    if result.executed_commands and can_edit:
+        reply, applied = await apply_planned_commands(
+            session=session,
+            diag_repo=diag_repo,
+            version_service=version_service,
+            hub=hub,
+            diagram_id=diagram_id,
+            prompt=content,
+            planned=result.executed_commands,
+            reply=reply,
+            speaker_name=speaker.name,
+        )
+
+    if result.consumed_pending and applied:
+        # Only a successful apply consumes the stored proposal; a failed one keeps it.
+        try:
+            memory.clear_pending(diagram_id)
+        except Exception:
+            logger.warning("Could not clear the applied pending proposal", exc_info=True)
+            session.rollback()
+
+    ai_msg = ChatMessage(
+        id=f"msg-{uuid.uuid4().hex[:8]}",
+        diagram_id=diagram_id,
+        sender_id=AI_USER_ID,
+        sender_name=AI_NAME,
+        sender_avatar_color=AI_AVATAR_COLOR,
+        sender_type=SenderType.AI,
+        content=reply,
+        addressed_to=result.addressed_to or speaker.name,
+        ai_engine=result.engine or None,
+        executed_commands=[c.model_dump(mode="json") for c in applied] or None,
+        suggested_commands=[c.model_dump(mode="json") for c in result.suggested_commands] or None,
+        suggested_operations=list(result.suggested_operations) or None,
+    )
+    chat_repo.add_message(ai_msg)
+    await hub.broadcast_chat_message(diagram_id, ai_msg.model_dump(mode="json"))
+    return ai_msg
 
 
 async def apply_planned_commands(

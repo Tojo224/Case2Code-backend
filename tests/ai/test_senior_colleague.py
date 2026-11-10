@@ -69,7 +69,7 @@ async def test_confirmation_without_pending_is_a_normal_message(db_session):
     assert provider.chat_calls  # answered as plain conversation
 
 
-async def test_confirmation_replays_the_stored_proposal_and_clears_it(db_session):
+async def test_confirmation_replays_the_stored_proposal_and_keeps_it_until_applied(db_session):
     doc = _doc()
     memory = SqlAlchemyAiMemoryRepository(db_session)
     memory.save_pending(doc.id, PENDING, doc.version, ANA.id)
@@ -80,7 +80,9 @@ async def test_confirmation_replays_the_stored_proposal_and_clears_it(db_session
 
     assert [c.name for c in res.executed_commands] == ["Reserva"]
     assert provider.command_calls == 0  # nothing is re-inferred
-    assert memory.get(doc.id).pending_commands is None
+    assert res.consumed_pending is True
+    # clearing is the caller's job, after a successful apply
+    assert memory.get(doc.id).pending_commands
 
 
 async def test_expired_pending_is_not_applied(db_session):
@@ -179,3 +181,63 @@ async def test_viewer_cannot_get_checkpoint_or_restore_proposals():
     rs = await _ask(orch, _doc(), "@ai volvé a la versión 1", version_service=svc, can_edit=False)
     assert svc.snapshots == [] and rs.suggested_operations == []
     assert "observador" in cp.reply_text
+
+
+async def test_stale_proposal_is_not_applied_and_is_cleared(db_session):
+    doc = _doc()
+    memory = SqlAlchemyAiMemoryRepository(db_session)
+    memory.save_pending(doc.id, PENDING, doc.version, ANA.id)
+    changed = doc.model_copy(update={"version": doc.version + 2})  # a human edited in the meantime
+
+    res = await _ask(SeniorColleagueOrchestrator(provider=FakeProvider()), changed, "@ai hacelo", memory=memory)
+
+    assert res.executed_commands == [] and res.consumed_pending is False
+    assert "cambió" in res.reply_text and "de nuevo" in res.reply_text
+    assert memory.get(doc.id).pending_commands is None
+
+
+async def test_untouched_proposal_still_applies_at_the_same_version(db_session):
+    doc = _doc()
+    memory = SqlAlchemyAiMemoryRepository(db_session)
+    memory.save_pending(doc.id, PENDING, doc.version, ANA.id)
+    res = await _ask(SeniorColleagueOrchestrator(provider=FakeProvider()), doc, "@ai dale", memory=memory)
+    assert [c.name for c in res.executed_commands] == ["Reserva"]
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "¿cómo ves la clase Paciente?",
+        "@ai ¿qué opinás de la tabla Cliente del hospital?",
+        "contame sobre el hotel",
+        "¿te parece bien el nombre Reserva en el hotel?",
+    ],
+)
+async def test_advisory_message_with_a_domain_word_does_not_project_a_hologram(db_session, prompt):
+    provider = FakeProvider(commands=[{"command_type": "CREATE_CLASS", "name": "Habitacion"}])
+    memory = SqlAlchemyAiMemoryRepository(db_session)
+    doc = _doc()
+    res = await _ask(SeniorColleagueOrchestrator(provider=provider), doc, prompt, mode="ADVISORY", memory=memory)
+
+    assert res.suggested_commands == []
+    assert provider.command_calls == 0
+    assert not (memory.get(doc.id) and memory.get(doc.id).pending_commands)
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "qué tablas me faltan para un ecommerce",
+        "armame la base de un hotel",
+        "diseñá un modelo para una veterinaria",
+        "¿qué entidades necesito para un hospital?",
+    ],
+)
+async def test_explicit_design_ask_with_a_topic_projects_a_hologram(db_session, prompt):
+    provider = FakeProvider(commands=[{"command_type": "CREATE_CLASS", "name": "Habitacion"}])
+    memory = SqlAlchemyAiMemoryRepository(db_session)
+    doc = _doc()
+    res = await _ask(SeniorColleagueOrchestrator(provider=provider), doc, prompt, mode="ADVISORY", memory=memory)
+
+    assert [c.name for c in res.suggested_commands] == ["Habitacion"]
+    assert memory.get(doc.id).pending_commands
