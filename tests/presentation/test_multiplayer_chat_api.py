@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from app.domain.models.canonical_uml import CanonicalUmlDocument, UmlClass
 from app.domain.models.chat import ChatMessage, SenderType
+from app.infrastructure.ai.senior_colleague import ColleagueResult
 from app.infrastructure.persistence.chat_repository import SqlAlchemyChatRepository
 
 
@@ -70,11 +71,11 @@ def test_websocket_chat_and_senior_ai_response(client, diagram_repo):
         "app.presentation.routes.diagrams.senior_colleague_orchestrator.process_colleague_interaction",
         new_callable=AsyncMock,
     ) as mock_ai:
-        mock_ai.return_value = (
-            "@Guest-1234, para modelar los roles te recomiendo una entidad Rol con relación N:M.",
-            "Guest-1234",
-            [],
-            doc,
+        mock_ai.return_value = ColleagueResult(
+            reply_text="@Guest-1234, para modelar los roles te recomiendo una entidad Rol con relación N:M.",
+            addressed_to="Guest-1234",
+            updated_doc=doc,
+            engine="Fake Engine",
         )
 
         with client.websocket_connect(f"/api/diagrams/{doc.id}/ws") as ws:
@@ -173,7 +174,7 @@ async def test_senior_orchestrator_with_local_llm():
         new_callable=AsyncMock,
         return_value="@Ana, te recomiendo normalizar la tabla Pedido en 3FN.",
     ):
-        reply, addressed_to, cmds, _ = await orchestrator.process_colleague_interaction(
+        result = await orchestrator.process_colleague_interaction(
             prompt="¿Qué opinas del diseño de Pedido?",
             speaker=speaker,
             active_users=[],
@@ -181,8 +182,8 @@ async def test_senior_orchestrator_with_local_llm():
             chat_history=[],
             ai_mode="advisory",
         )
-        assert "@Ana" in reply
-        assert addressed_to == "Ana"
-        assert cmds == []
-        assert orchestrator.last_used_engine == "Local LLM (qwen2.5-coder:3b)"
+        assert "@Ana" in result.reply_text
+        assert result.addressed_to == "Ana"
+        assert result.executed_commands == []
+        assert result.engine == "Local LLM (qwen2.5-coder:3b)"
 

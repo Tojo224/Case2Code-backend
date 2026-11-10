@@ -141,3 +141,22 @@ def test_open_diagram_allows_guests(client, diagram_repo):
     assert anonymous.json()["author_name"] == "Invitado"
     assert client.get("/api/diagrams/diag-open/versions").status_code == 200
     assert client.post("/api/diagrams/diag-open/versions/1/restore", json={}).status_code == 200
+
+
+def test_human_edit_takes_a_throttled_auto_snapshot_of_the_state_before_it(client, team):
+    url = f"/api/diagrams/{team['diagram_id']}/commands"
+    command = {"command_type": "CREATE_CLASS", "name": "Producto"}
+
+    first = client.post(url, headers=team["editor"]["headers"], json={"command": command})
+    assert first.status_code == 200
+    second = client.post(
+        url, headers=team["editor"]["headers"], json={"command": {**command, "name": "Cliente"}}
+    )
+    assert second.status_code == 200
+
+    versions = client.get(_url(team), headers=team["owner"]["headers"]).json()
+    # Throttled: two edits in a row produce exactly one AUTO snapshot.
+    assert [v["kind"] for v in versions] == ["AUTO"]
+    # It captured the state BEFORE the first edit (no classes yet), authored by the editor.
+    assert versions[0]["class_count"] == 0
+    assert versions[0]["author_name"] == "Editor"

@@ -18,3 +18,21 @@ def get_room_lock(diagram_id: str) -> asyncio.Lock:
         lock = asyncio.Lock()
         _locks[diagram_id] = lock
     return lock
+
+
+_ai_locks: Dict[str, asyncio.Lock] = {}
+
+
+def get_room_ai_lock(diagram_id: str) -> asyncio.Lock:
+    """Serializes AI turns of one room.
+
+    Unlike get_room_lock this one is held for the WHOLE AI turn (including the
+    LLM wait), so two AI turns never interleave. It must never be needed by a
+    human edit path: humans only ever take get_room_lock, and only briefly.
+    Lock order when both are needed: AI lock first, then the room lock.
+    """
+    lock = _ai_locks.get(diagram_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _ai_locks[diagram_id] = lock
+    return lock

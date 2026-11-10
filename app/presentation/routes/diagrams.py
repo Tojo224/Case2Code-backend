@@ -25,7 +25,14 @@ from app.domain.models.chat import ChatHistoryResponse, ChatMessage, SenderType
 from app.domain.models.user import CollaboratorRole, ProjectCollaborator, User
 from app.domain.services.uml_validator import UmlValidationError
 from app.infrastructure.ai import ai_uml_interpreter
+from app.application.services.version_service import DiagramVersionService
+from app.infrastructure.ai.ai_policy import is_addressed_to_ai
+from app.infrastructure.ai.ai_room_runner import (
+    apply_planned_commands,
+    schedule_ai_turn,
+)
 from app.infrastructure.ai.senior_colleague import senior_colleague_orchestrator
+from app.infrastructure.collaboration.room_locks import get_room_ai_lock, get_room_lock
 from app.infrastructure.collaboration.connection_manager import connection_manager
 from app.infrastructure.interchange.xmi_exporter import XmiExporter
 from app.infrastructure.interchange.xmi_importer import XmiImporter
@@ -216,6 +223,25 @@ def delete_diagram(
     return None
 
 
+def _auto_snapshot_before_edit(
+    repo: SqlAlchemyDiagramRepository,
+    document: CanonicalUmlDocument,
+    user: Optional[User],
+) -> None:
+    """Throttled safety snapshot of the state BEFORE a human edit.
+
+    Never blocks the edit: a failure here is logged and ignored.
+    """
+    try:
+        DiagramVersionService(repo.db).maybe_auto_snapshot(
+            document,
+            author_id=user.id if user else "guest",
+            author_name=user.name if user else "Invitado",
+        )
+    except Exception as e:
+        logger.warning("Auto snapshot skipped for diagram %s: %s", document.id, e)
+
+
 @router.post("/{diagram_id}/commands", response_model=CommandExecutionResponse)
 async def execute_command(
     diagram_id: str,
@@ -250,15 +276,25 @@ async def execute_command(
             )
 
     try:
-        updated_doc = command_bus.dispatch(document, payload.command)
-        repo.save(updated_doc)
+        # Reload-apply-save under the room lock so a concurrent AI/restore edit is never overwritten.
+        async with get_room_lock(diagram_id):
+            repo.db.expire_all()
+            fresh = repo.get_by_id(diagram_id)
+            if not fresh:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Diagram '{diagram_id}' not found.",
+                )
+            _auto_snapshot_before_edit(repo, fresh, current_user)
+            updated_doc = command_bus.dispatch(fresh, payload.command)
+            repo.save(updated_doc)
 
-        # Broadcast update to connected peers in real time
-        await connection_manager.broadcast_document_update(
-            diagram_id=diagram_id,
-            document_dict=updated_doc.model_dump(mode="json"),
-            command_dict=payload.command.model_dump(mode="json"),
-        )
+            # Broadcast update to connected peers in real time
+            await connection_manager.broadcast_document_update(
+                diagram_id=diagram_id,
+                document_dict=updated_doc.model_dump(mode="json"),
+                command_dict=payload.command.model_dump(mode="json"),
+            )
 
         return CommandExecutionResponse(
             success=True,
@@ -266,6 +302,8 @@ async def execute_command(
             document=updated_doc,
             error=None,
         )
+    except HTTPException:
+        raise
     except UmlValidationError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -319,22 +357,44 @@ async def process_assistant_prompt(
         }
 
     prompt_text = payload.prompt or "Replicar este diseño de base de datos en el diagrama."
-    updated_doc, executed_commands, reply = await ai_uml_interpreter.interpret_and_execute(
-        prompt_text, document, image_data=image_data, api_key_override=payload.gemini_api_key
-    )
-    if executed_commands:
-        repo.save(updated_doc)
-        # Broadcast AI-assisted updates to all collaborators
-        await connection_manager.broadcast_document_update(
-            diagram_id=diagram_id,
-            document_dict=updated_doc.model_dump(mode="json"),
+
+    # Serialize AI turns of the room; infer WITHOUT the document lock on a private copy,
+    # then reload fresh and replay the executed commands under the room lock.
+    async with get_room_ai_lock(diagram_id):
+        planned_doc, planned_commands, reply = await ai_uml_interpreter.interpret_and_execute(
+            prompt_text,
+            document.model_copy(deep=True),
+            image_data=image_data,
+            api_key_override=payload.gemini_api_key,
         )
+        if not planned_commands:
+            return AssistantPromptResponse(
+                success=False,
+                reply=reply,
+                executed_commands=[],
+                document=planned_doc,
+                error=None,
+            )
+
+        reply, executed_commands = await apply_planned_commands(
+            session=repo.db,
+            diag_repo=repo,
+            version_service=DiagramVersionService(repo.db),
+            hub=connection_manager,
+            diagram_id=diagram_id,
+            prompt=prompt_text,
+            planned=planned_commands,
+            reply=reply,
+            speaker_name=current_user.name if current_user else "equipo",
+        )
+        repo.db.expire_all()
+        final_doc = repo.get_by_id(diagram_id) or planned_doc
 
     return AssistantPromptResponse(
         success=bool(executed_commands),
         reply=reply,
         executed_commands=executed_commands,
-        document=updated_doc,
+        document=final_doc,
         error=None,
     )
 
@@ -633,89 +693,21 @@ async def diagram_websocket(
                             user_msg.model_dump(mode="json"),
                         )
 
-                        # Trigger AI Senior Developer if addressed to AI or matching natural language command/question
-                        content_lower = content.lower()
-                        should_trigger_ai = (
-                            "@ai" in content_lower
-                            or "@senior" in content_lower
-                            or "@bot" in content_lower
-                            or "/ai" in content_lower
-                            or "senior" in content_lower
-                            or "asistente" in content_lower
-                            or msg.get("force_ai", False)
-                            or content_lower.endswith("?")
-                            or bool(
-                                re.search(
-                                    r"^(¿|\?|crea|agrega|elimina|borra|relaciona|conecta|renombra|diseña|diseñá|genera|arma|armá|hace|hacé|hagas|haz|modela|quiero|necesito|podrías|podrias|puedes|podés|podes|cómo|como|que|qué|cuál|cual|dices|crees|revisa|valida|explica|ayuda|hola|buenas|alo|aló)",
-                                    content_lower,
-                                )
-                            )
-                        )
-
-                        if should_trigger_ai:
-                            # Notify room that Senior AI is typing
-                            await connection_manager.broadcast_typing(
+                        # The AI only answers to an explicit mention (@ai, @senior, @bot, /ai)
+                        # or when the client forces it (assistant panel). Human-to-human chat
+                        # never wakes it.
+                        if is_addressed_to_ai(content, bool(msg.get("force_ai", False))):
+                            db.expire_all()
+                            sender_role = user_repo.get_user_role(diagram_id, user.id)
+                            can_edit = sender_role != CollaboratorRole.VIEWER
+                            # Runs in the background: this loop keeps serving cursors/selection/chat.
+                            schedule_ai_turn(
                                 diagram_id=diagram_id,
-                                user_id="ai-senior",
-                                name="Senior AI",
-                                is_typing=True,
+                                content=content,
+                                speaker=user,
+                                can_edit=can_edit,
+                                ai_mode=ai_mode,
                             )
-
-                            try:
-                                active_presences = connection_manager.get_active_presences(diagram_id)
-                                current_doc = diag_repo.get_by_id(diagram_id) or document
-                                recent_history = chat_repo.list_messages(diagram_id, limit=12)
-
-                                reply_text, addressed_to, executed_commands, updated_doc = (
-                                    await senior_colleague_orchestrator.process_colleague_interaction(
-                                        prompt=content,
-                                        speaker=user,
-                                        active_users=active_presences,
-                                        document=current_doc,
-                                        chat_history=recent_history,
-                                        ai_mode=ai_mode,
-                                    )
-                                )
-
-                                if executed_commands:
-                                    updated_doc.version += 1
-                                    diag_repo.save(updated_doc)
-                                    document = updated_doc
-                                    await connection_manager.broadcast_document_update(
-                                        diagram_id=diagram_id,
-                                        document_dict=updated_doc.model_dump(mode="json"),
-                                    )
-
-                                ai_msg_id = f"msg-{uuid.uuid4().hex[:8]}"
-                                suggested = senior_colleague_orchestrator.last_suggested_commands
-                                ai_msg = ChatMessage(
-                                    id=ai_msg_id,
-                                    diagram_id=diagram_id,
-                                    sender_id="ai-senior",
-                                    sender_name="Senior AI",
-                                    sender_avatar_color="#8B5CF6",
-                                    sender_type=SenderType.AI,
-                                    content=reply_text,
-                                    addressed_to=addressed_to or user.name,
-                                    ai_engine=senior_colleague_orchestrator.last_used_engine,
-                                    executed_commands=[c.model_dump(mode="json") for c in executed_commands] if executed_commands else None,
-                                    suggested_commands=[c.model_dump(mode="json") for c in suggested] if suggested else None,
-                                )
-                                chat_repo.add_message(ai_msg)
-
-                                await connection_manager.broadcast_chat_message(
-                                    diagram_id,
-                                    ai_msg.model_dump(mode="json"),
-                                )
-                            except Exception as e:
-                                logger.error(f"Error executing AI senior colleague: {e}", exc_info=True)
-                            finally:
-                                await connection_manager.broadcast_typing(
-                                    diagram_id=diagram_id,
-                                    user_id="ai-senior",
-                                    name="Senior AI",
-                                    is_typing=False,
-                                )
                 elif msg_type == "SET_TYPING":
                     is_typing = bool(msg.get("is_typing", False))
                     await connection_manager.broadcast_typing(
