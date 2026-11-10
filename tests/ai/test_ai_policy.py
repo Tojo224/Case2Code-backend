@@ -77,7 +77,7 @@ def test_improve_verbs_are_mutation_intents(text):
     assert SeniorColleagueOrchestrator()._has_mutation_intent(text)
 
 
-@pytest.mark.parametrize("text", ["¿cuál es la mejor opción para esto?", "hola", "¿cómo ves la clase Cliente?"])
+@pytest.mark.parametrize("text", ["¿cuál es la mejor forma de modelar esto?", "¿cuál es la mejor opción para esto?", "hola", "¿cómo ves la clase Cliente?"])
 def test_advisory_messages_are_not_mutation_intents(text):
     from app.infrastructure.ai.senior_colleague import SeniorColleagueOrchestrator
     assert not SeniorColleagueOrchestrator()._has_mutation_intent(text)

@@ -77,6 +77,21 @@ class _Resolution:
     document_changed: bool = False  # the live document changed (-> DOCUMENT_UPDATED)
 
 
+def _clear_pending_proposal(repo: SqlAlchemyDiagramRepository, diagram_id: str) -> None:
+    """The hologram was applied or discarded from the card: the AI's stored copy of that same
+    proposal is stale and would make a later "hacelo" answer "el diagrama cambió". Never fails."""
+    try:
+        from app.infrastructure.persistence.ai_memory_repository import SqlAlchemyAiMemoryRepository
+
+        SqlAlchemyAiMemoryRepository(repo.db).clear_pending(diagram_id)
+    except Exception:
+        logger.warning("Could not clear the AI pending proposal for %s", diagram_id, exc_info=True)
+        try:
+            repo.db.rollback()
+        except Exception:
+            pass
+
+
 def _stamp(user: Optional[User], status_value: str, **extra: Any) -> Dict[str, Any]:
     data: Dict[str, Any] = {
         "status": status_value,
@@ -150,6 +165,8 @@ def _resolve_sync(
 
     if action == "DISCARD":
         updated = _record(chat_repo, message, key, _stamp(user, "DISCARDED"))
+        if target == "hologram":
+            _clear_pending_proposal(repo, diagram_id)
         return _Resolution(message=updated, recorded=True)
 
     if datetime.now(timezone.utc) - _as_utc(message.created_at) > PROPOSAL_TTL:
@@ -189,6 +206,7 @@ def _apply_hologram(
         "hologram",
         _stamp(user, "APPLIED", applied_count=len(outcome.applied), skipped_count=len(skipped)),
     )
+    _clear_pending_proposal(repo, diagram_id)
     return _Resolution(
         message=updated,
         document=outcome.document,

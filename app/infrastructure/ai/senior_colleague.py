@@ -46,6 +46,10 @@ _command_adapter = TypeAdapter(UmlCommand)
 
 SUPPORTED_DOMAINS_HINT = "ecommerce, veterinaria, hotel, universidad, biblioteca, hospital, restaurante o inventario"
 
+# Appended when no LLM answered and the built-in rules replied instead, so the room never
+# mistakes a canned answer for the model.
+AI_OFFLINE_NOTICE = "\n\nℹ️ No pude usar la IA en este momento, así que respondí en modo básico."
+
 
 @dataclass
 class ColleagueResult:
@@ -364,7 +368,7 @@ class SeniorColleagueOrchestrator:
             if normalized_mode != "PAIR_PROGRAMMER":
                 return ColleagueResult(
                     f"@{speaker.name}, estás en modo **Asesor**, así que no toco el diagrama. "
-                    "Cambiá a **Pair Dev** y repetime `@ai hacelo`, o usá **Aplicar Holograma**.",
+                    "Cambiá a **Pair Dev** y repetime `hacelo`, o usá **Aplicar Holograma**.",
                     addressed_to,
                     updated_doc=document,
                     suggested_commands=stored,
@@ -410,6 +414,8 @@ class SeniorColleagueOrchestrator:
             if executed_commands:
                 await self._memory_call_async(memory, "clear_pending", diagram_id)
             prefix = f"@{speaker.name}, " if not interpreter_reply.startswith(f"@{speaker.name}") else ""
+            if engine == rule_engine:
+                interpreter_reply += AI_OFFLINE_NOTICE
             return ColleagueResult(
                 f"{prefix}{interpreter_reply}",
                 addressed_to,
@@ -463,7 +469,7 @@ class SeniorColleagueOrchestrator:
                         reply_text += (
                             f"\n\n👻 **Holograma proyectado ({len(sim_commands)} cambios sugeridos):** "
                             "Dibujé la propuesta en el lienzo como vista previa sin modificar tu diagrama real. "
-                            "Podés revisarla y hacer clic en **Aplicar Holograma** o decirme `@ai hacelo` en modo **Pair Dev**."
+                            "Podés revisarla y hacer clic en **Aplicar Holograma** o decirme `hacelo` en modo **Pair Dev**."
                         )
             except Exception as e:
                 logger.warning(f"Could not simulate hologram preview: {e}")
@@ -535,6 +541,15 @@ class SeniorColleagueOrchestrator:
         ):
             return False
 
+        # "¿cuál es la mejor forma de modelar X?" asks for an opinion even though it contains
+        # a verb that looks like an edit ("modelar").
+        if re.match(r"^(¿|\?)?\s*cu[aá]l(?:es)?\b", text_lower) or re.match(
+            r"^(¿|\?)?\s*qu[eé]\s+(?:es|son|significa|diferencia|ventaja)", text_lower
+        ):
+            return False
+        if re.search(r"\bmejor(?:es)?\s+(?:forma|manera|pr[aá]ctica|opci[oó]n|enfoque)\b", text_lower):
+            return False
+
         mutation_keywords = [
             r"\b(crea(?:r|á|me)?|nueva|nuevo|agregar?|agreg[aá](?:me)?|a[ñn]ade|a[ñn]adir|add|create|new)\b",
             r"\b(hace(?:r|me)?|hac[eé](?:me)?|hagas|haz(?:me)?|arma(?:r|me)?|arm[aá](?:me)?|dise[ñn]a(?:r|me)?|genera(?:r|me)?|modela(?:r|me)?|construye|construir)\b",
@@ -597,10 +612,11 @@ class SeniorColleagueOrchestrator:
             except Exception as e:
                 logger.info(f"Provider {cand_provider.provider_name} unavailable for chat: {e}")
 
-        return (
-            self._build_fallback_senior_advice(prompt, speaker, document),
-            self.rule_based_provider.provider_name,
-        )
+        reply = self._build_fallback_senior_advice(prompt, speaker, document) + AI_OFFLINE_NOTICE
+        if len(active_users) >= 2:
+            # With 2+ people in the room the AI only answers when mentioned.
+            reply += "\n\nRecordá mencionarme con `@ai` cuando quieras que te responda."
+        return reply, self.rule_based_provider.provider_name
 
     def _build_senior_system_prompt(
         self,
@@ -752,7 +768,7 @@ ESTADO DE LA SALA:
             return (
                 f"¡Acá estoy @{speaker.name}! Actualmente veo en el tablero: {cls_names_str}. "
                 f"En modo **Asesor** te doy feedback de arquitectura, y en **Pair Dev** modifico el diagrama en vivo "
-                f"(ej. `@ai hacé la base de datos para un ecommerce` o `@ai crea la clase Producto con nombre y precio`). ¿Qué armamos?"
+                f"(ej. `hacé la base de datos para un ecommerce` o `crea la clase Producto con nombre y precio`). ¿Qué armamos?"
             )
 
         if any(w in norm for w in ["ecommerce", "e-commerce", "ecomerce", "e comerce", "tienda", "carrito", "ventas"]):
@@ -767,7 +783,7 @@ ESTADO DE LA SALA:
             return (
                 f"@{speaker.name}, revisando el tablero actual ({cls_names_str}), para un e-commerce sólido todavía les faltan "
                 f"las entidades clave: **{', '.join(missing)}** (especialmente `DetallePedido` para resolver la relación N:M entre Pedido y Producto guardando cantidad y precio histórico). "
-                f"Si estás en modo **Pair Dev**, escribí `@ai hacé la base de datos para un ecommerce` y te las genero ahora mismo."
+                f"Si estás en modo **Pair Dev**, pedime `hacé la base de datos para un ecommerce` y te las genero ahora mismo."
             )
 
         if any(w in norm for w in ["muchos a muchos", "n:m", "m:n", "many to many"]):
@@ -802,7 +818,7 @@ ESTADO DE LA SALA:
         return (
             f"@{speaker.name}, analizando tu consulta sobre '{prompt}': "
             f"actualmente en el tablero tenemos {len(document.classes)} entidad(es) ({cls_names_str}). "
-            f"En modo **Pair Dev** podés pedirme `@ai hacé la base de datos para un ecommerce` (o veterinaria, hotel, hospital, restaurante, inventario) o `@ai crea la clase X con...`."
+            f"En modo **Pair Dev** podés pedirme `hacé la base de datos para un ecommerce` (o veterinaria, hotel, hospital, restaurante, inventario) o `crea la clase X con...`."
         )
 
 

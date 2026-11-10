@@ -267,3 +267,18 @@ async def test_software_usage_questions_do_not_mutate_and_teach_editor_features(
     assert provider.chat_calls and "GUÍA DE FUNCIONALIDADES REALES DEL EDITOR CASE2CODE" in provider.chat_calls[0]["system"]
     assert expected_keyword in res.reply_text
     assert "Cliente" in res.reply_text  # dynamically references the current diagram's class
+
+
+@pytest.mark.asyncio
+async def test_rule_engine_answers_carry_a_notice_that_the_ai_was_not_used():
+    provider = FakeProvider(chat_reply=None)  # no model answered: the built-in rules reply
+    orch = SeniorColleagueOrchestrator(provider=provider)
+    res = await _ask(orch, _doc(), "¿qué opinás de mi modelo?", mode="ADVISORY")
+    assert "modo básico" in res.reply_text
+
+
+@pytest.mark.asyncio
+async def test_fallback_examples_do_not_push_the_at_ai_mention_when_alone():
+    orch = SeniorColleagueOrchestrator(provider=FakeProvider(chat_reply=None))
+    res = await _ask(orch, _doc(), "contame algo raro sobre cosas", mode="ADVISORY")
+    assert "`@ai" not in res.reply_text
