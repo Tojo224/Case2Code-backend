@@ -64,3 +64,10 @@ def test_development_still_falls_back_to_sqlite(monkeypatch):
     )
     engine = database.get_engine()
     assert engine.url.get_backend_name() == "sqlite"
+
+
+def test_engine_creation_checks_the_secret_before_touching_the_database(monkeypatch):
+    monkeypatch.setattr(database.settings, "ENVIRONMENT", "production")
+    monkeypatch.setattr(database.settings, "JWT_SECRET", DEFAULT_JWT_SECRET)
+    with pytest.raises(RuntimeError, match="JWT_SECRET"):
+        database.get_engine()

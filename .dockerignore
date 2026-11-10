@@ -1,0 +1,24 @@
+# secrets and local state
+.env
+.env.*
+!.env.production.example
+*.db
+*.sqlite3
+
+# python / tooling
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.codegraph/
+.git/
+.claude/
+
+# not needed at runtime
+tests/
+temp_output/
+ollama/
+docs/
+odd/
+*.md
+docker-compose*.yml

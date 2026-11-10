@@ -4,7 +4,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import declarative_base, sessionmaker, Session
 
-from app.core.config import settings
+from app.core.config import settings, validate_production_settings
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +20,9 @@ def _mask_url(url: str) -> str:
 
 
 def get_engine():
+    # The engine is built at import time, before the app lifespan runs: check the insecure
+    # production defaults here too so the error names the real problem (not a DB timeout).
+    validate_production_settings(settings)
     db_url = settings.DATABASE_URL
     try:
         # Test if connection works (especially if postgres is expected)
