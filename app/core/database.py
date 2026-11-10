@@ -1,16 +1,28 @@
 import logging
 from typing import Generator
 from sqlalchemy import create_engine, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import declarative_base, sessionmaker, Session
 
-from app.core.config import settings
+from app.core.config import settings, validate_production_settings
 
 logger = logging.getLogger(__name__)
 
 Base = declarative_base()
 
 
+def _mask_url(url: str) -> str:
+    """Hides the password of a database URL so it never lands in the logs."""
+    try:
+        return make_url(url).render_as_string(hide_password=True)
+    except Exception:
+        return "<unparseable database url>"
+
+
 def get_engine():
+    # The engine is built at import time, before the app lifespan runs: check the insecure
+    # production defaults here too so the error names the real problem (not a DB timeout).
+    validate_production_settings(settings)
     db_url = settings.DATABASE_URL
     try:
         # Test if connection works (especially if postgres is expected)
@@ -25,8 +37,12 @@ def get_engine():
             pass
         return engine
     except Exception as e:
+        if settings.is_production:
+            # A silent SQLite inside the container would "work" and lose every diagram on redeploy.
+            logger.error("Could not connect to the database at '%s': %s", _mask_url(db_url), e)
+            raise
         logger.warning(
-            f"Could not connect to primary database at '{db_url}': {e}. Falling back to SQLite '{settings.SQLITE_FALLBACK_URL}'."
+            f"Could not connect to primary database at '{_mask_url(db_url)}': {e}. Falling back to SQLite '{settings.SQLITE_FALLBACK_URL}'."
         )
         return create_engine(
             settings.SQLITE_FALLBACK_URL,
