@@ -18,6 +18,7 @@ from fastapi import (
 from sqlalchemy.orm import Session
 
 from app.application.command_bus import command_bus
+from app.core.config import settings
 from app.core.database import get_db
 from app.core.security import decode_access_token
 from app.domain.models.canonical_uml import CanonicalUmlDocument
@@ -26,7 +27,12 @@ from app.domain.models.user import CollaboratorRole, ProjectCollaborator, User
 from app.domain.services.uml_validator import UmlValidationError
 from app.infrastructure.ai import ai_uml_interpreter
 from app.application.services.version_service import DiagramVersionService
-from app.infrastructure.ai.ai_policy import is_addressed_to_ai
+from app.infrastructure.ai.ai_policy import (
+    AI_PROVIDER_MODES,
+    can_user_edit_via_ai,
+    check_llm_base_url,
+    is_addressed_to_ai,
+)
 from app.infrastructure.ai.ai_room_runner import (
     apply_planned_commands,
     schedule_ai_turn,
@@ -43,6 +49,7 @@ from app.presentation.routes.auth import get_current_user, get_current_user_opti
 from app.presentation.schemas.auth_schemas import AddCollaboratorRequest
 from app.presentation.schemas.diagram_schemas import (
     AssistantPromptRequest,
+    AiConfigUpdateRequest,
     AssistantPromptResponse,
     CommandExecutionResponse,
     CreateDiagramRequest,
@@ -147,12 +154,32 @@ async def get_ai_provider_config():
 
 
 @router.post("/ai/config")
-async def update_ai_provider_config(payload: dict):
-    """Updates runtime Local LLM / Cloud AI provider settings."""
+async def update_ai_provider_config(
+    payload: AiConfigUpdateRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """Updates runtime Local LLM / Cloud AI provider settings (authenticated users only).
+
+    The LLM URL is process-wide, so it is restricted to allowlisted hosts to keep
+    room prompts from being redirected to an arbitrary server."""
+    mode = payload.provider_mode.strip().lower() if payload.provider_mode else None
+    if mode and mode not in AI_PROVIDER_MODES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Modo de proveedor inválido. Usá: local, hybrid o gemini.",
+        )
+    if payload.local_base_url and payload.local_base_url.strip():
+        error = check_llm_base_url(
+            payload.local_base_url,
+            settings.AI_ALLOWED_LLM_HOSTS,
+            settings.LOCAL_LLM_BASE_URL,
+        )
+        if error:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=error)
     senior_colleague_orchestrator.update_runtime_config(
-        provider_mode=payload.get("provider_mode"),
-        local_base_url=payload.get("local_base_url"),
-        local_model=payload.get("local_model"),
+        provider_mode=mode,
+        local_base_url=payload.local_base_url,
+        local_model=payload.local_model,
     )
     return await senior_colleague_orchestrator.get_status()
 
@@ -676,6 +703,22 @@ async def diagram_websocket(
                     content = str(msg.get("content", "")).strip()
                     ai_mode = str(msg.get("ai_mode", "PAIR_PROGRAMMER"))
                     if content:
+                        # Access can change while the socket is open (collaborator removed,
+                        # role downgraded): decide from fresh data on EVERY chat message, so a
+                        # removed member can neither post nor wake the AI.
+                        db.expire_all()
+                        fresh_doc = diag_repo.get_by_id(diagram_id)
+                        if fresh_doc is None:
+                            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+                            break
+                        sender_role = user_repo.get_user_role(diagram_id, user.id)
+                        in_room, can_edit = can_user_edit_via_ai(
+                            fresh_doc.owner_id, user.id, sender_role
+                        )
+                        if not in_room:
+                            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+                            break
+
                         msg_id = f"msg-{uuid.uuid4().hex[:8]}"
                         user_msg = ChatMessage(
                             id=msg_id,
@@ -697,9 +740,6 @@ async def diagram_websocket(
                         # or when the client forces it (assistant panel). Human-to-human chat
                         # never wakes it.
                         if is_addressed_to_ai(content, bool(msg.get("force_ai", False))):
-                            db.expire_all()
-                            sender_role = user_repo.get_user_role(diagram_id, user.id)
-                            can_edit = sender_role != CollaboratorRole.VIEWER
                             # Runs in the background: this loop keeps serving cursors/selection/chat.
                             schedule_ai_turn(
                                 diagram_id=diagram_id,

@@ -69,3 +69,45 @@ def test_generic_database_request():
     assert is_generic_database_request("@ai hacé la base de datos")
     assert is_generic_database_request("creá un esquema básico")
     assert not is_generic_database_request("hacé la base de datos para un gimnasio")
+
+
+@pytest.mark.parametrize(
+    "owner,user,role,expected",
+    [
+        (None, "guest-1", None, (True, True)),
+        (None, "u1", "VIEWER", (True, False)),
+        ("own", "own", "OWNER", (True, True)),
+        ("own", "own", None, (True, True)),
+        ("own", "u2", "EDITOR", (True, True)),
+        ("own", "u2", "VIEWER", (True, False)),
+        ("own", "u2", None, (False, False)),
+        ("own", "guest-1", None, (False, False)),
+    ],
+)
+def test_can_user_edit_via_ai(owner, user, role, expected):
+    from app.infrastructure.ai.ai_policy import can_user_edit_via_ai
+
+    assert can_user_edit_via_ai(owner, user, role) == expected
+
+
+@pytest.mark.parametrize(
+    "url,rejected",
+    [
+        ("http://localhost:11434", False),
+        ("https://OLLAMA:11434/v1", False),
+        ("http://host.docker.internal:11434", False),
+        ("http://llm.internal.corp:8000", False),
+        ("ftp://localhost", True),
+        ("file:///etc/passwd", True),
+        ("http://evil.example.com", True),
+        ("http://localhost@evil.example.com", True),
+        ("not a url", True),
+    ],
+)
+def test_check_llm_base_url(url, rejected):
+    from app.infrastructure.ai.ai_policy import check_llm_base_url
+
+    result = check_llm_base_url(
+        url, "localhost,127.0.0.1,host.docker.internal,ollama", "http://llm.internal.corp:8000"
+    )
+    assert (result is not None) is rejected

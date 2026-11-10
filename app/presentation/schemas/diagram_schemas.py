@@ -35,3 +35,11 @@ class AssistantPromptResponse(BaseModel):
     document: CanonicalUmlDocument
     error: Optional[str] = None
 
+
+
+class AiConfigUpdateRequest(BaseModel):
+    """Runtime LLM settings. Semantic validation (mode, URL host) is done by the route."""
+
+    provider_mode: Optional[str] = Field(default=None, max_length=16)
+    local_base_url: Optional[str] = Field(default=None, max_length=300)
+    local_model: Optional[str] = Field(default=None, max_length=120)

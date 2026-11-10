@@ -121,6 +121,15 @@ def test_websocket_chat_and_senior_ai_response(client, diagram_repo):
             assert ai_typing_end["is_typing"] is False
 
 
+def _auth_headers(client):
+    import uuid
+
+    token = client.post("/api/auth/register", json={
+        "email": f"cfg_{uuid.uuid4().hex[:6]}@case2code.io", "password": "Password123!", "name": "Cfg"}
+    ).json()["access_token"]
+    return {"Authorization": f"Bearer {token}"}
+
+
 def test_ai_provider_config_endpoints(client):
     with patch(
         "app.infrastructure.ai.ai_provider.LocalLlmAiProvider.check_health",
@@ -149,6 +158,7 @@ def test_ai_provider_config_endpoints(client):
                 "local_base_url": "http://localhost:11434/v1/",
                 "local_model": "llama3.2:3b",
             },
+            headers=_auth_headers(client),
         )
         assert resp_post.status_code == 200
         updated = resp_post.json()

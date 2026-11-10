@@ -21,6 +21,11 @@ class Settings(BaseSettings):
     LOCAL_LLM_BASE_URL: str = os.getenv("LOCAL_LLM_BASE_URL", "http://localhost:11434")
     LOCAL_LLM_MODEL: str = os.getenv("LOCAL_LLM_MODEL", "qwen2.5-coder:3b")
     LOCAL_LLM_API_KEY: Optional[str] = os.getenv("LOCAL_LLM_API_KEY", None)
+    # Hosts a user may point the runtime LLM URL to (comma separated). The host of
+    # the currently configured LOCAL_LLM_BASE_URL is always allowed too.
+    AI_ALLOWED_LLM_HOSTS: str = os.getenv(
+        "AI_ALLOWED_LLM_HOSTS", "localhost,127.0.0.1,host.docker.internal,ollama"
+    )
     LOCAL_LLM_TIMEOUT: float = float(os.getenv("LOCAL_LLM_TIMEOUT", "15.0"))
 
     GEMINI_API_KEY: Optional[str] = os.getenv("GEMINI_API_KEY", None)
