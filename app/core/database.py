@@ -41,6 +41,8 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 def init_db() -> None:
     """Create all tables in the database and ensure columns exist."""
     import app.infrastructure.persistence.models  # noqa: F401
+    import app.infrastructure.persistence.version_models  # noqa: F401
+    import app.infrastructure.persistence.room_memory_models  # noqa: F401
     Base.metadata.create_all(bind=engine)
 
     try:
@@ -51,6 +53,9 @@ def init_db() -> None:
                 conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token VARCHAR(255)"))
                 conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token_expires_at TIMESTAMP WITH TIME ZONE"))
                 conn.execute(text("ALTER TABLE diagram_chat_messages ADD COLUMN IF NOT EXISTS ai_engine VARCHAR(128)"))
+                conn.execute(text("ALTER TABLE diagram_chat_messages ADD COLUMN IF NOT EXISTS suggested_commands JSONB"))
+                conn.execute(text("ALTER TABLE diagram_chat_messages ADD COLUMN IF NOT EXISTS suggested_operations JSONB"))
+                conn.execute(text("ALTER TABLE diagram_chat_messages ADD COLUMN IF NOT EXISTS resolutions JSONB"))
             else:
                 # Check SQLite schema for owner_id in diagrams
                 result = conn.execute(text("PRAGMA table_info(diagrams)")).fetchall()
@@ -71,8 +76,26 @@ def init_db() -> None:
                 chat_cols = [row[1] for row in chat_result]
                 if chat_cols and "ai_engine" not in chat_cols:
                     conn.execute(text("ALTER TABLE diagram_chat_messages ADD COLUMN ai_engine VARCHAR(128)"))
+                if chat_cols and "suggested_commands" not in chat_cols:
+                    conn.execute(text("ALTER TABLE diagram_chat_messages ADD COLUMN suggested_commands JSON"))
+                if chat_cols and "suggested_operations" not in chat_cols:
+                    conn.execute(text("ALTER TABLE diagram_chat_messages ADD COLUMN suggested_operations JSON"))
+                if chat_cols and "resolutions" not in chat_cols:
+                    conn.execute(text("ALTER TABLE diagram_chat_messages ADD COLUMN resolutions JSON"))
     except Exception as e:
         logger.warning(f"Database migration notice: {e}")
+
+    # Existing databases predate the composite index (create_all skips existing tables).
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_diagram_chat_messages_diagram_created "
+                    "ON diagram_chat_messages (diagram_id, created_at)"
+                )
+            )
+    except Exception as e:
+        logger.warning(f"Chat index migration notice: {e}")
 
 
 def get_db() -> Generator[Session, None, None]:

@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.responses import FileResponse
+from starlette.background import BackgroundTask
 from sqlalchemy.orm import Session
 
 from app.application.ports.code_generator import SqlDialect
@@ -23,6 +24,11 @@ from app.infrastructure.persistence.user_repository import SqlAlchemyUserReposit
 from app.presentation.routes.auth import get_current_user_optional, get_user_repo
 
 router = APIRouter(prefix="/diagrams", tags=["Code Generator"])
+
+
+def _delete_file(path: str) -> None:
+    """Remove a generated archive once it has been sent."""
+    Path(path).unlink(missing_ok=True)
 
 
 def get_repository(db: Session = Depends(get_db)) -> SqlAlchemyDiagramRepository:
@@ -169,6 +175,7 @@ def generate_backend(
         zip_file,
         media_type="application/zip",
         filename=f"{Path(zip_file).name}",
+        background=BackgroundTask(_delete_file, zip_file),
     )
 
 
@@ -201,5 +208,6 @@ def generate_mobile_app(
         zip_file,
         media_type="application/zip",
         filename=f"{Path(zip_file).name}",
+        background=BackgroundTask(_delete_file, zip_file),
     )
 

@@ -4,6 +4,7 @@ import re
 import uuid
 from typing import List, Optional
 from fastapi import (
+    Request,
     APIRouter,
     Depends,
     File,
@@ -18,14 +19,30 @@ from fastapi import (
 from sqlalchemy.orm import Session
 
 from app.application.command_bus import command_bus
+from app.application.replay import replay_commands
+from app.core.config import settings
 from app.core.database import get_db
 from app.core.security import decode_access_token
 from app.domain.models.canonical_uml import CanonicalUmlDocument
+from app.domain.models.commands import UmlCommand
 from app.domain.models.chat import ChatHistoryResponse, ChatMessage, SenderType
 from app.domain.models.user import CollaboratorRole, ProjectCollaborator, User
 from app.domain.services.uml_validator import UmlValidationError
 from app.infrastructure.ai import ai_uml_interpreter
+from app.application.services.version_service import DiagramVersionService
+from app.infrastructure.ai.ai_policy import (
+    AI_PROVIDER_MODES,
+    can_user_edit_via_ai,
+    check_llm_base_url,
+    is_addressed_to_ai,
+)
+from app.infrastructure.ai.ai_room_runner import (
+    apply_planned_commands,
+    schedule_ai_turn,
+)
 from app.infrastructure.ai.senior_colleague import senior_colleague_orchestrator
+from app.infrastructure.collaboration.blocking import run_blocking
+from app.infrastructure.collaboration.room_locks import get_room_ai_lock, get_room_lock
 from app.infrastructure.collaboration.connection_manager import connection_manager
 from app.infrastructure.interchange.xmi_exporter import XmiExporter
 from app.infrastructure.interchange.xmi_importer import XmiImporter
@@ -36,7 +53,10 @@ from app.presentation.routes.auth import get_current_user, get_current_user_opti
 from app.presentation.schemas.auth_schemas import AddCollaboratorRequest
 from app.presentation.schemas.diagram_schemas import (
     AssistantPromptRequest,
+    AiConfigUpdateRequest,
     AssistantPromptResponse,
+    BatchCommandsRequest,
+    BatchCommandsResponse,
     CommandExecutionResponse,
     CreateDiagramRequest,
     ExecuteCommandRequest,
@@ -44,7 +64,26 @@ from app.presentation.schemas.diagram_schemas import (
 
 logger = logging.getLogger(__name__)
 
+from app.core.rate_limit import ai_limiter, chat_limiter
+from app.core.limits import (
+    ALLOWED_IMAGE_MIME_TYPES,
+    MAX_CHAT_MESSAGE_CHARS,
+    MAX_WS_FRAME_CHARS,
+    MAX_XMI_UPLOAD_BYTES,
+)
+
 router = APIRouter(prefix="/diagrams", tags=["Diagrams"])
+
+
+async def _read_xmi_upload(file: UploadFile) -> bytes:
+    """Reads an uploaded XMI with a hard size cap (never buffers more than the limit + 1 byte)."""
+    content = await file.read(MAX_XMI_UPLOAD_BYTES + 1)
+    if len(content) > MAX_XMI_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"El archivo XMI supera el máximo de {MAX_XMI_UPLOAD_BYTES // 1_000_000} MB.",
+        )
+    return content
 
 
 def get_repository(db: Session = Depends(get_db)) -> SqlAlchemyDiagramRepository:
@@ -102,7 +141,7 @@ async def import_new_diagram_xmi(
         relationships=[],
     )
 
-    content_bytes = await file.read()
+    content_bytes = await _read_xmi_upload(file)
     try:
         xml_str = content_bytes.decode("utf-8")
     except UnicodeDecodeError:
@@ -140,12 +179,32 @@ async def get_ai_provider_config():
 
 
 @router.post("/ai/config")
-async def update_ai_provider_config(payload: dict):
-    """Updates runtime Local LLM / Cloud AI provider settings."""
+async def update_ai_provider_config(
+    payload: AiConfigUpdateRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """Updates runtime Local LLM / Cloud AI provider settings (authenticated users only).
+
+    The LLM URL is process-wide, so it is restricted to allowlisted hosts to keep
+    room prompts from being redirected to an arbitrary server."""
+    mode = payload.provider_mode.strip().lower() if payload.provider_mode else None
+    if mode and mode not in AI_PROVIDER_MODES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Modo de proveedor inválido. Usá: local, hybrid o gemini.",
+        )
+    if payload.local_base_url and payload.local_base_url.strip():
+        error = check_llm_base_url(
+            payload.local_base_url,
+            settings.AI_ALLOWED_LLM_HOSTS,
+            settings.LOCAL_LLM_BASE_URL,
+        )
+        if error:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=error)
     senior_colleague_orchestrator.update_runtime_config(
-        provider_mode=payload.get("provider_mode"),
-        local_base_url=payload.get("local_base_url"),
-        local_model=payload.get("local_model"),
+        provider_mode=mode,
+        local_base_url=payload.local_base_url,
+        local_model=payload.local_model,
     )
     return await senior_colleague_orchestrator.get_status()
 
@@ -216,6 +275,116 @@ def delete_diagram(
     return None
 
 
+def _auto_snapshot_before_edit(
+    repo: SqlAlchemyDiagramRepository,
+    document: CanonicalUmlDocument,
+    user: Optional[User],
+) -> None:
+    """Throttled safety snapshot of the state BEFORE a human edit.
+
+    Never blocks the edit: a failure here is logged and ignored.
+    """
+    try:
+        DiagramVersionService(repo.db).maybe_auto_snapshot(
+            document,
+            author_id=user.id if user else "guest",
+            author_name=user.name if user else "Invitado",
+        )
+    except Exception as e:
+        logger.warning("Auto snapshot skipped for diagram %s: %s", document.id, e)
+
+
+_NOT_FOUND = "Diagram '{}' not found."
+
+
+def _check_edit_access(
+    document: CanonicalUmlDocument,
+    diagram_id: str,
+    user_repo: SqlAlchemyUserRepository,
+    current_user: Optional[User],
+    *,
+    unauthenticated: str,
+    forbidden: str,
+    viewer: str,
+) -> None:
+    """Edit rules shared by every mutating endpoint of a private diagram."""
+    if not document.owner_id:
+        return
+    if not current_user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=unauthenticated)
+    role = user_repo.get_user_role(diagram_id, current_user.id)
+    if not role and document.owner_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=forbidden)
+    if role == CollaboratorRole.VIEWER:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=viewer)
+
+
+def _load_for_edit(
+    repo: SqlAlchemyDiagramRepository,
+    user_repo: SqlAlchemyUserRepository,
+    diagram_id: str,
+    current_user: Optional[User],
+    **messages: str,
+) -> CanonicalUmlDocument:
+    """Blocking section: load the diagram and check the caller may edit it."""
+    document = repo.get_by_id(diagram_id)
+    if not document:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=_NOT_FOUND.format(diagram_id),
+        )
+    _check_edit_access(document, diagram_id, user_repo, current_user, **messages)
+    return document
+
+
+_COMMAND_MESSAGES = dict(
+    unauthenticated="Authentication required to modify this diagram.",
+    forbidden="You do not have permission to modify this diagram.",
+    viewer="Viewers cannot make changes to this diagram.",
+)
+
+
+def _reload_fresh(repo: SqlAlchemyDiagramRepository, diagram_id: str) -> CanonicalUmlDocument:
+    repo.db.expire_all()  # humans/AI saved in the meantime: never trust the identity map
+    fresh = repo.get_by_id(diagram_id)
+    if not fresh:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=_NOT_FOUND.format(diagram_id),
+        )
+    return fresh
+
+
+def _run_single_command(
+    repo: SqlAlchemyDiagramRepository,
+    diagram_id: str,
+    command: UmlCommand,
+    user: Optional[User],
+) -> CanonicalUmlDocument:
+    """Blocking section (call under the room lock): reload, snapshot, dispatch, save."""
+    fresh = _reload_fresh(repo, diagram_id)
+    _auto_snapshot_before_edit(repo, fresh, user)
+    updated_doc = command_bus.dispatch(fresh, command)
+    repo.save(updated_doc)
+    return updated_doc
+
+
+def _run_batch(
+    repo: SqlAlchemyDiagramRepository,
+    diagram_id: str,
+    commands: List[UmlCommand],
+    user: Optional[User],
+):
+    """Blocking section (call under the room lock): reload, replay (skipping failures),
+    snapshot the pre-state and save ONCE. Nothing is saved when nothing applied."""
+    fresh = _reload_fresh(repo, diagram_id)
+    outcome = replay_commands(fresh, commands)
+    if outcome.applied:
+        _auto_snapshot_before_edit(repo, fresh, user)
+        repo.save(outcome.document)
+    return outcome
+
+
 @router.post("/{diagram_id}/commands", response_model=CommandExecutionResponse)
 async def execute_command(
     diagram_id: str,
@@ -224,41 +393,22 @@ async def execute_command(
     user_repo: SqlAlchemyUserRepository = Depends(get_user_repo),
     current_user: Optional[User] = Depends(get_current_user_optional),
 ):
-    document = repo.get_by_id(diagram_id)
-    if not document:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Diagram '{diagram_id}' not found.",
-        )
-
-    if document.owner_id:
-        if not current_user:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Authentication required to modify this diagram.",
-            )
-        role = user_repo.get_user_role(diagram_id, current_user.id)
-        if not role and document.owner_id != current_user.id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="You do not have permission to modify this diagram.",
-            )
-        if role == CollaboratorRole.VIEWER:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Viewers cannot make changes to this diagram.",
-            )
+    await run_blocking(_load_for_edit, repo, user_repo, diagram_id, current_user, **_COMMAND_MESSAGES)
 
     try:
-        updated_doc = command_bus.dispatch(document, payload.command)
-        repo.save(updated_doc)
+        # Reload-apply-save under the room lock so a concurrent AI/restore edit is never overwritten.
+        # The whole DB section is one blocking call; the broadcast stays on the loop.
+        async with get_room_lock(diagram_id):
+            updated_doc = await run_blocking(
+                _run_single_command, repo, diagram_id, payload.command, current_user
+            )
 
-        # Broadcast update to connected peers in real time
-        await connection_manager.broadcast_document_update(
-            diagram_id=diagram_id,
-            document_dict=updated_doc.model_dump(mode="json"),
-            command_dict=payload.command.model_dump(mode="json"),
-        )
+            # Broadcast update to connected peers in real time
+            await connection_manager.broadcast_document_update(
+                diagram_id=diagram_id,
+                document_dict=updated_doc.model_dump(mode="json"),
+                command_dict=payload.command.model_dump(mode="json"),
+            )
 
         return CommandExecutionResponse(
             success=True,
@@ -266,6 +416,8 @@ async def execute_command(
             document=updated_doc,
             error=None,
         )
+    except HTTPException:
+        raise
     except UmlValidationError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -278,63 +430,124 @@ async def execute_command(
         )
 
 
-@router.post("/{diagram_id}/assistant", response_model=AssistantPromptResponse)
-async def process_assistant_prompt(
+@router.post("/{diagram_id}/commands/batch", response_model=BatchCommandsResponse)
+async def execute_command_batch(
     diagram_id: str,
-    payload: AssistantPromptRequest,
+    payload: BatchCommandsRequest,
     repo: SqlAlchemyDiagramRepository = Depends(get_repository),
     user_repo: SqlAlchemyUserRepository = Depends(get_user_repo),
     current_user: Optional[User] = Depends(get_current_user_optional),
 ):
-    document = repo.get_by_id(diagram_id)
-    if not document:
+    """Applies many commands: failing ones are skipped and reported, the document is
+    saved once and broadcast once."""
+    if not payload.commands:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Diagram '{diagram_id}' not found.",
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="The commands list must not be empty.",
         )
+    await run_blocking(_load_for_edit, repo, user_repo, diagram_id, current_user, **_COMMAND_MESSAGES)
 
-    if document.owner_id:
-        if not current_user:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Debes iniciar sesión para usar el asistente en este proyecto.",
+    async with get_room_lock(diagram_id):
+        outcome = await run_blocking(_run_batch, repo, diagram_id, payload.commands, current_user)
+        if outcome.applied:
+            await connection_manager.broadcast_document_update(
+                diagram_id=diagram_id,
+                document_dict=outcome.document.model_dump(mode="json"),
             )
-        role = user_repo.get_user_role(diagram_id, current_user.id)
-        if not role and document.owner_id != current_user.id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="No tienes permiso para modificar este proyecto con el asistente.",
-            )
-        if role == CollaboratorRole.VIEWER:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Los observadores (viewers) no pueden aplicar cambios con el asistente.",
-            )
+
+    return BatchCommandsResponse(
+        document=outcome.document,
+        applied=outcome.applied,
+        skipped=[
+            {"command": cmd.model_dump(mode="json"), "reason": reason}
+            for cmd, reason in outcome.skipped
+        ],
+    )
+
+
+@router.post("/{diagram_id}/assistant", response_model=AssistantPromptResponse)
+async def process_assistant_prompt(
+    diagram_id: str,
+    payload: AssistantPromptRequest,
+    request: Request,
+    repo: SqlAlchemyDiagramRepository = Depends(get_repository),
+    user_repo: SqlAlchemyUserRepository = Depends(get_user_repo),
+    current_user: Optional[User] = Depends(get_current_user_optional),
+):
+    document = await run_blocking(
+        _load_for_edit,
+        repo,
+        user_repo,
+        diagram_id,
+        current_user,
+        unauthenticated="Debes iniciar sesión para usar el asistente en este proyecto.",
+        forbidden="No tienes permiso para modificar este proyecto con el asistente.",
+        viewer="Los observadores (viewers) no pueden aplicar cambios con el asistente.",
+    )
+
+    client_key = current_user.id if current_user else (request.client.host if request and request.client else "anon")
+    retry_after = ai_limiter.hit(f"rest:{client_key}")
+    if retry_after:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Demasiados pedidos al asistente. Esperá unos segundos y probá de nuevo.",
+            headers={"Retry-After": str(int(retry_after) + 1)},
+        )
 
     image_data = None
     if payload.image_base64:
+        if (payload.image_mime_type or "image/png") not in ALLOWED_IMAGE_MIME_TYPES:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Formato de imagen no soportado. Usá PNG, JPEG, WEBP o GIF.",
+            )
         image_data = {
             "data": payload.image_base64,
             "mime_type": payload.image_mime_type or "image/png",
         }
 
     prompt_text = payload.prompt or "Replicar este diseño de base de datos en el diagrama."
-    updated_doc, executed_commands, reply = await ai_uml_interpreter.interpret_and_execute(
-        prompt_text, document, image_data=image_data, api_key_override=payload.gemini_api_key
-    )
-    if executed_commands:
-        repo.save(updated_doc)
-        # Broadcast AI-assisted updates to all collaborators
-        await connection_manager.broadcast_document_update(
-            diagram_id=diagram_id,
-            document_dict=updated_doc.model_dump(mode="json"),
+
+    # Serialize AI turns of the room; infer WITHOUT the document lock on a private copy,
+    # then reload fresh and replay the executed commands under the room lock.
+    async with get_room_ai_lock(diagram_id):
+        planned_doc, planned_commands, reply = await ai_uml_interpreter.interpret_and_execute(
+            prompt_text,
+            document.model_copy(deep=True),
+            image_data=image_data,
+            api_key_override=payload.gemini_api_key,
         )
+        if not planned_commands:
+            return AssistantPromptResponse(
+                success=False,
+                reply=reply,
+                executed_commands=[],
+                document=planned_doc,
+                error=None,
+            )
+
+        reply, executed_commands = await apply_planned_commands(
+            session=repo.db,
+            diag_repo=repo,
+            version_service=DiagramVersionService(repo.db),
+            hub=connection_manager,
+            diagram_id=diagram_id,
+            prompt=prompt_text,
+            planned=planned_commands,
+            reply=reply,
+            speaker_name=current_user.name if current_user else "equipo",
+        )
+        def reload_final():
+            repo.db.expire_all()
+            return repo.get_by_id(diagram_id)
+
+        final_doc = await run_blocking(reload_final) or planned_doc
 
     return AssistantPromptResponse(
         success=bool(executed_commands),
         reply=reply,
         executed_commands=executed_commands,
-        document=updated_doc,
+        document=final_doc,
         error=None,
     )
 
@@ -386,53 +599,48 @@ async def import_diagram_xmi(
     user_repo: SqlAlchemyUserRepository = Depends(get_user_repo),
     current_user: Optional[User] = Depends(get_current_user_optional),
 ):
-    document = repo.get_by_id(diagram_id)
-    if not document:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Diagram '{diagram_id}' not found.",
-        )
-    if document.owner_id:
-        if not current_user:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Inicia sesión para modificar este proyecto.",
-            )
-        role = user_repo.get_user_role(diagram_id, current_user.id)
-        if not role and document.owner_id != current_user.id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="No tienes permiso para modificar este proyecto.",
-            )
-        if role == CollaboratorRole.VIEWER:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Los observadores (viewers) no pueden importar diagramas.",
-            )
+    await run_blocking(
+        _load_for_edit,
+        repo,
+        user_repo,
+        diagram_id,
+        current_user,
+        unauthenticated="Inicia sesión para modificar este proyecto.",
+        forbidden="No tienes permiso para modificar este proyecto.",
+        viewer="Los observadores (viewers) no pueden importar diagramas.",
+    )
 
-    content_bytes = await file.read()
+    content_bytes = await _read_xmi_upload(file)
     try:
         xml_str = content_bytes.decode("utf-8")
     except UnicodeDecodeError:
         xml_str = content_bytes.decode("latin-1")
 
-    try:
-        updated_document = XmiImporter.import_xmi(xml_str, document)
-    except Exception as e:
-        logger.error(f"Error parsing XMI file: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Error parsing XMI file: {str(e)}",
+    def import_on_fresh() -> CanonicalUmlDocument:
+        # Read-modify-write on a FRESH document (the one loaded for the permission check may
+        # be stale by now): parse, snapshot the pre-state so the import is undoable, save.
+        fresh = _reload_fresh(repo, diagram_id)
+        try:
+            updated = XmiImporter.import_xmi(xml_str, fresh.model_copy(deep=True))
+        except Exception as e:
+            logger.error(f"Error parsing XMI file: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Error parsing XMI file: {str(e)}",
+            )
+        _auto_snapshot_before_edit(repo, fresh, current_user)
+        updated.version += 1
+        repo.save(updated)
+        return updated
+
+    async with get_room_lock(diagram_id):
+        updated_document = await run_blocking(import_on_fresh)
+
+        # Broadcast update to all active web sockets
+        await connection_manager.broadcast_document_update(
+            diagram_id=diagram_id,
+            document_dict=updated_document.model_dump(mode="json"),
         )
-
-    updated_document.version += 1
-    repo.save(updated_document)
-
-    # Broadcast update to all active web sockets
-    await connection_manager.broadcast_document_update(
-        diagram_id=diagram_id,
-        document_dict=updated_document.model_dump(mode="json"),
-    )
 
     return updated_document
 
@@ -596,6 +804,10 @@ async def diagram_websocket(
     try:
         while True:
             data = await websocket.receive_text()
+            if len(data) > MAX_WS_FRAME_CHARS:
+                # 1009 = message too big: the client is misbehaving, drop it instead of parsing.
+                await websocket.close(code=1009)
+                break
             try:
                 msg = json.loads(data)
                 msg_type = msg.get("type")
@@ -615,7 +827,49 @@ async def diagram_websocket(
                 elif msg_type == "SEND_CHAT_MESSAGE":
                     content = str(msg.get("content", "")).strip()
                     ai_mode = str(msg.get("ai_mode", "PAIR_PROGRAMMER"))
+                    if len(content) > MAX_CHAT_MESSAGE_CHARS:
+                        # Tell only the sender; nothing is stored, broadcast or sent to the LLM.
+                        await connection_manager.send_to(
+                            websocket,
+                            {
+                                "type": "MESSAGE_REJECTED",
+                                "reason": "too_long",
+                                "max_chars": MAX_CHAT_MESSAGE_CHARS,
+                            },
+                        )
+                        continue
                     if content:
+                        retry_after = chat_limiter.hit(f"{diagram_id}:{user.id}")
+                        if retry_after:
+                            await connection_manager.send_to(
+                                websocket,
+                                {
+                                    "type": "MESSAGE_REJECTED",
+                                    "reason": "rate_limited",
+                                    "retry_after": round(retry_after, 1),
+                                },
+                            )
+                            continue
+                        # Access can change while the socket is open (collaborator removed,
+                        # role downgraded): decide from fresh data on EVERY chat message, so a
+                        # removed member can neither post nor wake the AI.
+                        def recheck_access():
+                            db.expire_all()
+                            fresh_doc = diag_repo.get_by_id(diagram_id)
+                            if fresh_doc is None:
+                                return None
+                            sender_role = user_repo.get_user_role(diagram_id, user.id)
+                            return can_user_edit_via_ai(fresh_doc.owner_id, user.id, sender_role)
+
+                        access = await run_blocking(recheck_access)
+                        if access is None:
+                            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+                            break
+                        in_room, can_edit = access
+                        if not in_room:
+                            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+                            break
+
                         msg_id = f"msg-{uuid.uuid4().hex[:8]}"
                         user_msg = ChatMessage(
                             id=msg_id,
@@ -627,95 +881,40 @@ async def diagram_websocket(
                             content=content,
                             addressed_to=msg.get("addressed_to"),
                         )
-                        chat_repo.add_message(user_msg)
+                        await run_blocking(chat_repo.add_message, user_msg)
                         await connection_manager.broadcast_chat_message(
                             diagram_id,
                             user_msg.model_dump(mode="json"),
                         )
 
-                        # Trigger AI Senior Developer if addressed to AI or matching natural language command/question
-                        content_lower = content.lower()
-                        should_trigger_ai = (
-                            "@ai" in content_lower
-                            or "@senior" in content_lower
-                            or "@bot" in content_lower
-                            or "/ai" in content_lower
-                            or "senior" in content_lower
-                            or "asistente" in content_lower
-                            or msg.get("force_ai", False)
-                            or content_lower.endswith("?")
-                            or bool(
-                                re.search(
-                                    r"^(¿|\?|crea|agrega|elimina|borra|relaciona|conecta|renombra|diseña|diseñá|genera|arma|armá|hace|hacé|hagas|haz|modela|quiero|necesito|podrías|podrias|puedes|podés|podes|cómo|como|que|qué|cuál|cual|dices|crees|revisa|valida|explica|ayuda|hola|buenas|alo|aló)",
-                                    content_lower,
+                        # Solo user in the room -> AI answers automatically without @ai/@senior.
+                        # 2+ users in the room -> AI only answers when mentioned with @ai or @senior.
+                        active_user_count = len(connection_manager.get_active_presences(diagram_id))
+                        if is_addressed_to_ai(
+                            content,
+                            bool(msg.get("force_ai", False)),
+                            active_user_count=active_user_count,
+                        ):
+                            ai_retry = ai_limiter.hit(f"ws:{user.id}")
+                            if ai_retry:
+                                # The human message was already posted; only the LLM call is refused.
+                                await connection_manager.send_to(
+                                    websocket,
+                                    {
+                                        "type": "MESSAGE_REJECTED",
+                                        "reason": "ai_rate_limited",
+                                        "retry_after": round(ai_retry, 1),
+                                    },
                                 )
-                            )
-                        )
-
-                        if should_trigger_ai:
-                            # Notify room that Senior AI is typing
-                            await connection_manager.broadcast_typing(
+                                continue
+                            # Runs in the background: this loop keeps serving cursors/selection/chat.
+                            schedule_ai_turn(
                                 diagram_id=diagram_id,
-                                user_id="ai-senior",
-                                name="Senior AI",
-                                is_typing=True,
+                                content=content,
+                                speaker=user,
+                                can_edit=can_edit,
+                                ai_mode=ai_mode,
                             )
-
-                            try:
-                                active_presences = connection_manager.get_active_presences(diagram_id)
-                                current_doc = diag_repo.get_by_id(diagram_id) or document
-                                recent_history = chat_repo.list_messages(diagram_id, limit=12)
-
-                                reply_text, addressed_to, executed_commands, updated_doc = (
-                                    await senior_colleague_orchestrator.process_colleague_interaction(
-                                        prompt=content,
-                                        speaker=user,
-                                        active_users=active_presences,
-                                        document=current_doc,
-                                        chat_history=recent_history,
-                                        ai_mode=ai_mode,
-                                    )
-                                )
-
-                                if executed_commands:
-                                    updated_doc.version += 1
-                                    diag_repo.save(updated_doc)
-                                    document = updated_doc
-                                    await connection_manager.broadcast_document_update(
-                                        diagram_id=diagram_id,
-                                        document_dict=updated_doc.model_dump(mode="json"),
-                                    )
-
-                                ai_msg_id = f"msg-{uuid.uuid4().hex[:8]}"
-                                suggested = senior_colleague_orchestrator.last_suggested_commands
-                                ai_msg = ChatMessage(
-                                    id=ai_msg_id,
-                                    diagram_id=diagram_id,
-                                    sender_id="ai-senior",
-                                    sender_name="Senior AI",
-                                    sender_avatar_color="#8B5CF6",
-                                    sender_type=SenderType.AI,
-                                    content=reply_text,
-                                    addressed_to=addressed_to or user.name,
-                                    ai_engine=senior_colleague_orchestrator.last_used_engine,
-                                    executed_commands=[c.model_dump(mode="json") for c in executed_commands] if executed_commands else None,
-                                    suggested_commands=[c.model_dump(mode="json") for c in suggested] if suggested else None,
-                                )
-                                chat_repo.add_message(ai_msg)
-
-                                await connection_manager.broadcast_chat_message(
-                                    diagram_id,
-                                    ai_msg.model_dump(mode="json"),
-                                )
-                            except Exception as e:
-                                logger.error(f"Error executing AI senior colleague: {e}", exc_info=True)
-                            finally:
-                                await connection_manager.broadcast_typing(
-                                    diagram_id=diagram_id,
-                                    user_id="ai-senior",
-                                    name="Senior AI",
-                                    is_typing=False,
-                                )
                 elif msg_type == "SET_TYPING":
                     is_typing = bool(msg.get("is_typing", False))
                     await connection_manager.broadcast_typing(

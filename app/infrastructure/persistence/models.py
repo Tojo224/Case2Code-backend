@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, JSON, String, Text
+from sqlalchemy import Column, DateTime, ForeignKey, Index, Integer, JSON, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 
@@ -87,10 +87,18 @@ class DiagramChatMessageModel(Base):
     addressed_to = Column(String(255), nullable=True)
     ai_engine = Column(String(128), nullable=True)
     executed_commands = Column(JSON().with_variant(JSONB, "postgresql"), nullable=True)
+    suggested_commands = Column(JSON().with_variant(JSONB, "postgresql"), nullable=True)
+    suggested_operations = Column(JSON().with_variant(JSONB, "postgresql"), nullable=True)
+    # Durable, server-side outcome of each proposal: {"hologram": {...}, "op:<index>": {...}}
+    resolutions = Column(JSON().with_variant(JSONB, "postgresql"), nullable=True)
     created_at = Column(
         DateTime(timezone=True),
         nullable=False,
         default=lambda: datetime.now(timezone.utc),
+    )
+
+    __table_args__ = (
+        Index("ix_diagram_chat_messages_diagram_created", "diagram_id", "created_at"),
     )
 
     diagram = relationship("DiagramModel", back_populates="chat_messages")

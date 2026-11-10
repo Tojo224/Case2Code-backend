@@ -21,6 +21,14 @@ class ChatMessage(BaseModel):
     ai_engine: Optional[str] = None
     executed_commands: Optional[List[Dict[str, Any]]] = None
     suggested_commands: Optional[List[Dict[str, Any]]] = None
+    # Non-UML operations the AI proposes and a human must approve, e.g.
+    # {"op": "RESTORE_VERSION", "version_number": 5, "reason": "..."} or
+    # {"op": "CREATE_CHECKPOINT", "label": "...", "reason": "..."}
+    suggested_operations: Optional[List[Dict[str, Any]]] = None
+    # Outcome of each proposal, decided server-side. Keys: "hologram" and "op:<index>".
+    # Value: {"status": "APPLIED"|"DISCARDED", "by_id", "by_name", "at" (iso), and optionally
+    # "detail", "applied_count", "skipped_count"}.
+    resolutions: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 

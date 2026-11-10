@@ -825,9 +825,11 @@ class GeminiAiProvider(AiProviderPort):
     def __init__(self, api_key: str, model: str = "gemini-3.5-flash-lite"):
         self.api_key = api_key
         self.model = model
-        self.endpoint = (
-            f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent?key={self.api_key}"
-        )
+        # The key travels in a header: in the URL it leaks through httpx error messages and logs.
+        self.endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent"
+
+    def _headers(self) -> Dict[str, str]:
+        return {"Content-Type": "application/json", "x-goog-api-key": self.api_key}
 
     @property
     def provider_name(self) -> str:
@@ -928,7 +930,7 @@ Do not output markdown codeblocks, explanations outside JSON, or any extra text.
         }
         timeout = httpx.Timeout(10.0, connect=3.0)
         async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.post(self.endpoint, json=payload)
+            resp = await client.post(self.endpoint, json=payload, headers=self._headers())
             resp.raise_for_status()
             data = resp.json()
             candidates = data.get("candidates", [])
@@ -976,7 +978,7 @@ Do not output markdown codeblocks, explanations outside JSON, or any extra text.
         for attempt in range(3):
             try:
                 async with httpx.AsyncClient(timeout=45.0) as client:
-                    response = await client.post(self.endpoint, json=payload)
+                    response = await client.post(self.endpoint, json=payload, headers=self._headers())
                     if response.status_code in (503, 429) and attempt < 2:
                         await asyncio.sleep(1.0 * (attempt + 1))
                         continue
