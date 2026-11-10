@@ -241,3 +241,29 @@ async def test_explicit_design_ask_with_a_topic_projects_a_hologram(db_session, 
 
     assert [c.name for c in res.suggested_commands] == ["Habitacion"]
     assert memory.get(doc.id).pending_commands
+
+
+@pytest.mark.parametrize(
+    "prompt,expected_keyword",
+    [
+        ("¿cómo creo una clase en el diagrama?", "+ Clase"),
+        ("¿cómo agrego un atributo a mi tabla?", "+ Agregar atributo"),
+        ("¿cómo relaciono dos clases en el editor?", "Relaciones DB"),
+        ("¿cómo genero el código SQL y Spring Boot?", "Spring Boot"),
+        ("enseñame a usar el software", "Case2Code"),
+    ],
+)
+async def test_software_usage_questions_do_not_mutate_and_teach_editor_features(prompt, expected_keyword):
+    # Provider that returns None for chat so the deterministic dynamic guide is exercised,
+    # while still offering commands if _run_interpreter were wrongly called.
+    provider = FakeProvider(commands=[{"command_type": "CREATE_CLASS", "name": "NoDeberiaCrearse"}], chat_reply=None)
+    orch = SeniorColleagueOrchestrator(provider=provider)
+    doc = _doc()
+    res = await _ask(orch, doc, prompt, mode="PAIR_PROGRAMMER")
+
+    assert res.executed_commands == []
+    assert res.suggested_commands == []
+    assert provider.command_calls == 0
+    assert provider.chat_calls and "GUÍA DE FUNCIONALIDADES REALES DEL EDITOR CASE2CODE" in provider.chat_calls[0]["system"]
+    assert expected_keyword in res.reply_text
+    assert "Cliente" in res.reply_text  # dynamically references the current diagram's class

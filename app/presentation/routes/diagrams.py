@@ -887,10 +887,14 @@ async def diagram_websocket(
                             user_msg.model_dump(mode="json"),
                         )
 
-                        # The AI only answers to an explicit mention (@ai, @senior, @bot, /ai)
-                        # or when the client forces it (assistant panel). Human-to-human chat
-                        # never wakes it.
-                        if is_addressed_to_ai(content, bool(msg.get("force_ai", False))):
+                        # Solo user in the room -> AI answers automatically without @ai/@senior.
+                        # 2+ users in the room -> AI only answers when mentioned with @ai or @senior.
+                        active_user_count = len(connection_manager.get_active_presences(diagram_id))
+                        if is_addressed_to_ai(
+                            content,
+                            bool(msg.get("force_ai", False)),
+                            active_user_count=active_user_count,
+                        ):
                             ai_retry = ai_limiter.hit(f"ws:{user.id}")
                             if ai_retry:
                                 # The human message was already posted; only the LLM call is refused.

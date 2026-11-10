@@ -19,18 +19,34 @@ def fold(text: str) -> str:
     return "".join(c for c in nfkd if not unicodedata.combining(c)).lower()
 
 
-def is_addressed_to_ai(content: str, force_ai: bool = False) -> bool:
-    """True only for an explicit mention token or when the client forces the AI
-    (the assistant panel). Plain room chat between humans never wakes the AI."""
+def is_addressed_to_ai(
+    content: str,
+    force_ai: bool = False,
+    active_user_count: Optional[int] = None,
+) -> bool:
+    """Decides whether a chat message in the room wakes the Senior AI.
+
+    - When `active_user_count` is provided:
+      - 1 user in the room (`active_user_count <= 1`): the AI responds automatically
+        without needing `@ai` or `@senior`.
+      - 2 or more users (`active_user_count >= 2`): human-to-human chat is the default
+        and the AI ONLY responds when explicitly mentioned (`@ai`, `@senior`, `@bot`, `/ai`).
+    - When `active_user_count` is None: falls back to `force_ai` or explicit mention.
+    """
+    has_mention = bool(_MENTION_RE.search(content or ""))
+    if active_user_count is not None:
+        if active_user_count <= 1:
+            return True
+        return has_mention
     if force_ai:
         return True
-    return bool(_MENTION_RE.search(content or ""))
+    return has_mention
 
 
 def strip_mention(text: str) -> str:
-    """Removes a leading mention token and its separators."""
+    """Removes leading mention token(s) and their separators."""
     return re.sub(
-        r"^\s*(?:@(?:ai|senior|bot)|/ai)(?!\w)[\s,:;-]*",
+        r"^\s*(?:(?:@(?:ai|senior|bot)|/ai)(?!\w)[\s,:;-]*)+",
         "",
         text or "",
         flags=re.IGNORECASE,

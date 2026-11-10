@@ -287,6 +287,16 @@ async def apply_planned_commands(
 
 _background_tasks: Set["asyncio.Task[Any]"] = set()
 _active_turns: Dict[str, int] = {}
+_in_flight_keys: Set[Tuple[str, str, str]] = set()
+
+
+def _dedup_key(diagram_id: str, kwargs: Dict[str, Any]) -> Optional[Tuple[str, str, str]]:
+    speaker = kwargs.get("speaker")
+    content = kwargs.get("content")
+    speaker_id = getattr(speaker, "id", None)
+    if not speaker_id or not content:
+        return None
+    return (diagram_id, str(speaker_id), str(content).strip().lower())
 
 
 async def _set_typing(hub, diagram_id: str, is_typing: bool) -> None:
@@ -298,12 +308,19 @@ async def _set_typing(hub, diagram_id: str, is_typing: bool) -> None:
         logger.warning("Could not broadcast AI typing=%s: %s", is_typing, e)
 
 
-async def _guarded_turn(diagram_id: str, hub, **kwargs) -> None:
+async def _guarded_turn(
+    diagram_id: str,
+    hub,
+    dedup_key: Optional[Tuple[str, str, str]] = None,
+    **kwargs,
+) -> None:
     _active_turns[diagram_id] = _active_turns.get(diagram_id, 0) + 1
     await _set_typing(hub, diagram_id, True)
     try:
         await run_ai_turn(diagram_id=diagram_id, hub=hub, **kwargs)
     finally:
+        if dedup_key is not None:
+            _in_flight_keys.discard(dedup_key)
         _active_turns[diagram_id] -= 1
         if _active_turns[diagram_id] <= 0:
             _active_turns.pop(diagram_id, None)
@@ -319,10 +336,25 @@ def _on_task_done(task: "asyncio.Task[Any]") -> None:
         logger.error("AI turn failed: %s", exc, exc_info=exc)
 
 
+async def _noop_turn() -> None:
+    return None
+
+
 def schedule_ai_turn(*, diagram_id: str, hub=None, **kwargs) -> "asyncio.Task[Any]":
-    """Starts the AI turn in the background. The event loop only weakly
-    references tasks, so we keep them in a set until they finish."""
-    task = asyncio.create_task(_guarded_turn(diagram_id, hub or connection_manager, **kwargs))
+    """Starts the AI turn in the background. Deduplicates identical in-flight requests
+    from the same user in the same room so duplicate replies are never emitted."""
+    key = _dedup_key(diagram_id, kwargs)
+    if key is not None:
+        if key in _in_flight_keys:
+            task = asyncio.create_task(_noop_turn())
+            _background_tasks.add(task)
+            task.add_done_callback(_on_task_done)
+            return task
+        _in_flight_keys.add(key)
+
+    task = asyncio.create_task(
+        _guarded_turn(diagram_id, hub or connection_manager, dedup_key=key, **kwargs)
+    )
     _background_tasks.add(task)
     task.add_done_callback(_on_task_done)
     return task

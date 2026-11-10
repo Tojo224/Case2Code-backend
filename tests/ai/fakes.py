@@ -19,7 +19,7 @@ class FakeProvider(AiProviderPort):
         self,
         name: str = "Fake LLM",
         commands: Optional[List[Dict[str, Any]]] = None,
-        chat_reply: str = "Mi consejo: normalizá.",
+        chat_reply: Optional[str] = "Mi consejo: normalizá.",
         gate: Optional[asyncio.Event] = None,
         entered: Optional[asyncio.Event] = None,
     ):

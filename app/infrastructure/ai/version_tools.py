@@ -127,6 +127,10 @@ def detect_version_intent(prompt: str) -> Optional[VersionIntent]:
     "version 3", "historial de versiones", ...)."""
     text = fold(strip_mention(prompt))
 
+    # How-to / usage questions about versions should be taught by the AI advisor, not executed.
+    if re.search(r"^\W*(?:como|donde|para\s+que|explica\w*|ensena\w*)\b", text):
+        return None
+
     if _is_modelling_request(text) and not _STRONG_ANCHOR.search(text):
         return None
 

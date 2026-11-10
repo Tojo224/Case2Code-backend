@@ -34,6 +34,18 @@ def test_force_ai_flag_triggers_without_mention():
     assert is_addressed_to_ai("agregá un campo precio", force_ai=True)
 
 
+def test_solo_user_in_room_triggers_ai_without_mention():
+    assert is_addressed_to_ai("creá la clase Cliente", force_ai=False, active_user_count=1)
+    assert is_addressed_to_ai("¿cómo agrego un atributo?", force_ai=False, active_user_count=1)
+
+
+def test_two_or_more_users_require_explicit_mention():
+    assert not is_addressed_to_ai("hola equipo, ¿cómo lo hacemos?", force_ai=False, active_user_count=2)
+    assert not is_addressed_to_ai("creá la clase Cliente", force_ai=True, active_user_count=2)
+    assert is_addressed_to_ai("@ai creá la clase Cliente", force_ai=False, active_user_count=2)
+    assert is_addressed_to_ai("che @senior ¿qué opinás?", force_ai=False, active_user_count=3)
+
+
 @pytest.mark.parametrize("text", ["hacelo", "@ai dale", "Sí, hacelo por favor", "aplicá los cambios", "@ai ¡Hacelo!"])
 def test_confirmations(text):
     assert is_confirmation(text)

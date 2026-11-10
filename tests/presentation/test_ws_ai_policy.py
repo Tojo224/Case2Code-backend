@@ -30,16 +30,48 @@ def _drain_until_pong(ws):
         seen.append(msg)
 
 
-def test_human_chat_does_not_wake_the_ai(client, diagram_repo):
+def test_solo_user_in_room_wakes_the_ai_automatically_without_mention(client, diagram_repo):
     doc = _open_diagram(diagram_repo)
     with patch(PATCH_TARGET, new_callable=AsyncMock) as mock_ai:
+        mock_ai.return_value = _result(doc)
         with client.websocket_connect(f"/api/diagrams/{doc.id}/ws") as ws:
-            json.loads(ws.receive_text())  # ROOM_STATE
+            json.loads(ws.receive_text())  # ROOM_STATE (1 user in room)
+            ws.send_text(json.dumps({"type": "SEND_CHAT_MESSAGE", "content": "¿cómo creo una clase?", "force_ai": False}))
+            types = [json.loads(ws.receive_text())["type"] for _ in range(4)]
+    assert types == ["CHAT_MESSAGE", "TYPING_INDICATOR", "CHAT_MESSAGE", "TYPING_INDICATOR"]
+    mock_ai.assert_awaited_once()
+
+
+def test_human_chat_does_not_wake_the_ai(client, diagram_repo):
+    """When 2 or more users are in the room, normal chat between people does not wake the AI."""
+    doc = _open_diagram(diagram_repo)
+    with patch(PATCH_TARGET, new_callable=AsyncMock) as mock_ai:
+        with client.websocket_connect(f"/api/diagrams/{doc.id}/ws") as ws1, \
+             client.websocket_connect(f"/api/diagrams/{doc.id}/ws") as ws2:
+            json.loads(ws1.receive_text())  # ROOM_STATE for ws1
+            json.loads(ws2.receive_text())  # ROOM_STATE for ws2
+            json.loads(ws1.receive_text())  # USER_JOINED for ws2
             for text in ["¿cómo lo hacemos?", "hola, qué tal", "el senior de ayer estuvo bien", "creá la clase Cliente"]:
-                ws.send_text(json.dumps({"type": "SEND_CHAT_MESSAGE", "content": text}))
-            seen = _drain_until_pong(ws)
+                ws1.send_text(json.dumps({"type": "SEND_CHAT_MESSAGE", "content": text}))
+            seen = _drain_until_pong(ws1)
     assert [m["type"] for m in seen] == ["CHAT_MESSAGE"] * 4
     mock_ai.assert_not_called()
+
+
+def test_multi_user_room_wakes_the_ai_only_when_mentioned(client, diagram_repo):
+    """With 2+ users in the room, mentioning @ai or @senior wakes the AI once without duplicate replies."""
+    doc = _open_diagram(diagram_repo)
+    with patch(PATCH_TARGET, new_callable=AsyncMock) as mock_ai:
+        mock_ai.return_value = _result(doc)
+        with client.websocket_connect(f"/api/diagrams/{doc.id}/ws") as ws1, \
+             client.websocket_connect(f"/api/diagrams/{doc.id}/ws") as ws2:
+            json.loads(ws1.receive_text())  # ROOM_STATE
+            json.loads(ws2.receive_text())  # ROOM_STATE
+            json.loads(ws1.receive_text())  # USER_JOINED
+            ws1.send_text(json.dumps({"type": "SEND_CHAT_MESSAGE", "content": "@senior revisá las relaciones"}))
+            types = [json.loads(ws1.receive_text())["type"] for _ in range(4)]
+    assert types == ["CHAT_MESSAGE", "TYPING_INDICATOR", "CHAT_MESSAGE", "TYPING_INDICATOR"]
+    mock_ai.assert_awaited_once()
 
 
 def test_mention_wakes_the_ai_for_an_editor(client, diagram_repo):
