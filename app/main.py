@@ -2,8 +2,9 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.core.config import settings
+from app.core.config import settings, validate_production_settings
 from app.core.database import init_db
+from app.core.log_redaction import install_token_redaction
 from app.presentation.routes.auth import router as auth_router
 from app.presentation.routes.diagrams import router as diagrams_router
 from app.presentation.routes.generator import router as generator_router
@@ -13,6 +14,9 @@ from app.presentation.routes.versions import router as versions_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    install_token_redaction()
+    # Fail fast on insecure production settings before serving anything.
+    validate_production_settings()
     # Initialize database tables
     init_db()
     yield
