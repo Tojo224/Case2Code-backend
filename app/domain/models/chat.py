@@ -25,6 +25,10 @@ class ChatMessage(BaseModel):
     # {"op": "RESTORE_VERSION", "version_number": 5, "reason": "..."} or
     # {"op": "CREATE_CHECKPOINT", "label": "...", "reason": "..."}
     suggested_operations: Optional[List[Dict[str, Any]]] = None
+    # Outcome of each proposal, decided server-side. Keys: "hologram" and "op:<index>".
+    # Value: {"status": "APPLIED"|"DISCARDED", "by_id", "by_name", "at" (iso), and optionally
+    # "detail", "applied_count", "skipped_count"}.
+    resolutions: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 

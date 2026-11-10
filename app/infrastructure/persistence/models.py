@@ -89,6 +89,8 @@ class DiagramChatMessageModel(Base):
     executed_commands = Column(JSON().with_variant(JSONB, "postgresql"), nullable=True)
     suggested_commands = Column(JSON().with_variant(JSONB, "postgresql"), nullable=True)
     suggested_operations = Column(JSON().with_variant(JSONB, "postgresql"), nullable=True)
+    # Durable, server-side outcome of each proposal: {"hologram": {...}, "op:<index>": {...}}
+    resolutions = Column(JSON().with_variant(JSONB, "postgresql"), nullable=True)
     created_at = Column(
         DateTime(timezone=True),
         nullable=False,
