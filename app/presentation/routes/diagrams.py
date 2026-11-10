@@ -22,7 +22,7 @@ from app.application.command_bus import command_bus
 from app.application.replay import replay_commands
 from app.core.config import settings
 from app.core.database import get_db
-from app.core.security import decode_access_token
+from app.core.security import create_invite_token, decode_access_token, verify_invite_token
 from app.domain.models.canonical_uml import CanonicalUmlDocument
 from app.domain.models.commands import UmlCommand
 from app.domain.models.chat import ChatHistoryResponse, ChatMessage, SenderType
@@ -50,7 +50,12 @@ from app.infrastructure.persistence.chat_repository import SqlAlchemyChatReposit
 from app.infrastructure.persistence.diagram_repository import SqlAlchemyDiagramRepository
 from app.infrastructure.persistence.user_repository import SqlAlchemyUserRepository
 from app.presentation.routes.auth import get_current_user, get_current_user_optional, get_user_repo
-from app.presentation.schemas.auth_schemas import AddCollaboratorRequest
+from app.presentation.schemas.auth_schemas import (
+    AcceptInviteRequest,
+    AddCollaboratorRequest,
+    CreateInviteLinkRequest,
+    InviteLinkResponse,
+)
 from app.presentation.schemas.diagram_schemas import (
     AssistantPromptRequest,
     AiConfigUpdateRequest,
@@ -207,6 +212,42 @@ async def update_ai_provider_config(
         local_model=payload.local_model,
     )
     return await senior_colleague_orchestrator.get_status()
+
+
+@router.post("/accept-invite", response_model=CanonicalUmlDocument)
+def accept_diagram_invite(
+    payload: AcceptInviteRequest,
+    repo: SqlAlchemyDiagramRepository = Depends(get_repository),
+    user_repo: SqlAlchemyUserRepository = Depends(get_user_repo),
+    current_user: User = Depends(get_current_user),
+):
+    token_info = verify_invite_token(payload.token)
+    if not token_info:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="El enlace de invitación es inválido o ha expirado.",
+        )
+
+    diagram_id = token_info["diagram_id"]
+    role_str = token_info.get("role", "EDITOR")
+
+    doc = repo.get_by_id(diagram_id)
+    if not doc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Diagram '{diagram_id}' not found.",
+        )
+
+    if doc.owner_id and doc.owner_id != current_user.id:
+        existing_role = user_repo.get_user_role(diagram_id, current_user.id)
+        if not existing_role:
+            try:
+                assigned_role = CollaboratorRole(role_str)
+            except ValueError:
+                assigned_role = CollaboratorRole.EDITOR
+            user_repo.add_collaborator(diagram_id, current_user.id, assigned_role)
+
+    return doc
 
 
 @router.get("/{diagram_id}", response_model=CanonicalUmlDocument)
@@ -714,6 +755,37 @@ def remove_collaborator(
     if not removed:
         raise HTTPException(status_code=404, detail="Collaborator not found.")
     return None
+
+
+@router.post("/{diagram_id}/invite-link", response_model=InviteLinkResponse)
+def create_diagram_invite_link(
+    diagram_id: str,
+    payload: Optional[CreateInviteLinkRequest] = None,
+    repo: SqlAlchemyDiagramRepository = Depends(get_repository),
+    user_repo: SqlAlchemyUserRepository = Depends(get_user_repo),
+    current_user: User = Depends(get_current_user),
+):
+    doc = repo.get_by_id(diagram_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail=f"Diagram '{diagram_id}' not found.")
+
+    if doc.owner_id and doc.owner_id != current_user.id:
+        role = user_repo.get_user_role(diagram_id, current_user.id)
+        if role not in (CollaboratorRole.OWNER, CollaboratorRole.EDITOR):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Solo el propietario o editores pueden generar enlaces de invitación.",
+            )
+
+    role_to_grant = payload.role if payload else CollaboratorRole.EDITOR
+    token = create_invite_token(diagram_id, role=role_to_grant.value)
+    return InviteLinkResponse(
+        token=token,
+        diagram_id=diagram_id,
+        role=role_to_grant.value,
+        invite_url=f"/?invite={token}&diagram={diagram_id}",
+    )
+
 
 
 # --- Team Chat Endpoints ---

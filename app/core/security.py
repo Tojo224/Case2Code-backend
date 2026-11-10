@@ -135,3 +135,30 @@ def verify_reset_token(token: str) -> Optional[str]:
         return None
     return payload.get("sub")
 
+
+def create_invite_token(diagram_id: str, role: str = "EDITOR", expires_delta: Optional[timedelta] = None) -> str:
+    """Generate a signed invite token valid for 7 days by default."""
+    if not expires_delta:
+        expires_delta = timedelta(days=7)
+    return create_access_token(
+        {"sub": diagram_id, "type": "diagram_invite", "role": role},
+        expires_delta=expires_delta,
+    )
+
+
+def verify_invite_token(token: str) -> Optional[Dict[str, Any]]:
+    """Verify invite token and return dict with diagram_id and role if valid."""
+    payload = decode_access_token(token)
+    if not payload:
+        return None
+    if payload.get("type") != "diagram_invite":
+        return None
+    diagram_id = payload.get("sub")
+    if not diagram_id:
+        return None
+    return {
+        "diagram_id": diagram_id,
+        "role": payload.get("role", "EDITOR"),
+    }
+
+

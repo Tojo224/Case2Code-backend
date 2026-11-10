@@ -43,3 +43,19 @@ class AuthResponse(BaseModel):
 class AddCollaboratorRequest(BaseModel):
     email: str
     role: CollaboratorRole = CollaboratorRole.EDITOR
+
+
+class CreateInviteLinkRequest(BaseModel):
+    role: CollaboratorRole = CollaboratorRole.EDITOR
+
+
+class InviteLinkResponse(BaseModel):
+    token: str
+    diagram_id: str
+    role: str
+    invite_url: str
+
+
+class AcceptInviteRequest(BaseModel):
+    token: str
+

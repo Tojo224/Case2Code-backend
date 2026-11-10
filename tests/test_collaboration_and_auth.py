@@ -114,6 +114,87 @@ def test_diagram_ownership_and_collaborators(client):
     assert any(d["id"] == diag_id for d in est_diagrams)
 
 
+def test_invite_link_creation_and_acceptance(client):
+    owner_email = f"lead_{uuid.uuid4().hex[:6]}@case2code.io"
+    peer_email = f"peer_{uuid.uuid4().hex[:6]}@case2code.io"
+
+    owner = client.post(
+        "/api/auth/register",
+        json={"email": owner_email, "password": "Password123!", "name": "Tech Lead"},
+    ).json()
+    peer = client.post(
+        "/api/auth/register",
+        json={"email": peer_email, "password": "Password123!", "name": "Peer Dev"},
+    ).json()
+
+    owner_token = owner["access_token"]
+    peer_token = peer["access_token"]
+
+    # Owner creates diagram
+    create_resp = client.post(
+        "/api/diagrams",
+        headers={"Authorization": f"Bearer {owner_token}"},
+        json={"name": "Microservicios Pagos", "description": "Arquitectura de pagos"},
+    )
+    assert create_resp.status_code == 201
+    diag_id = create_resp.json()["id"]
+
+    # Peer tries to access before invite: 403 Forbidden
+    peer_get_before = client.get(f"/api/diagrams/{diag_id}", headers={"Authorization": f"Bearer {peer_token}"})
+    assert peer_get_before.status_code == 403
+
+    # Owner generates invite link with VIEWER role
+    link_resp = client.post(
+        f"/api/diagrams/{diag_id}/invite-link",
+        headers={"Authorization": f"Bearer {owner_token}"},
+        json={"role": "VIEWER"},
+    )
+    assert link_resp.status_code == 200
+    link_data = link_resp.json()
+    token = link_data["token"]
+    assert link_data["diagram_id"] == diag_id
+    assert link_data["role"] == "VIEWER"
+    assert f"?invite={token}&diagram={diag_id}" in link_data["invite_url"]
+
+    # Reject invalid/tampered token
+    bad_accept = client.post(
+        "/api/diagrams/accept-invite",
+        headers={"Authorization": f"Bearer {peer_token}"},
+        json={"token": "invalid.fake.token"},
+    )
+    assert bad_accept.status_code == 400
+
+    # Peer accepts valid invite
+    accept_resp = client.post(
+        "/api/diagrams/accept-invite",
+        headers={"Authorization": f"Bearer {peer_token}"},
+        json={"token": token},
+    )
+    assert accept_resp.status_code == 200
+    accepted_doc = accept_resp.json()
+    assert accepted_doc["id"] == diag_id
+
+    # Peer now sees it in their diagram list
+    peer_list = client.get("/api/diagrams", headers={"Authorization": f"Bearer {peer_token}"})
+    assert peer_list.status_code == 200
+    assert any(d["id"] == diag_id for d in peer_list.json())
+
+    # Peer checks role in collaborators list
+    collabs_resp = client.get(f"/api/diagrams/{diag_id}/collaborators", headers={"Authorization": f"Bearer {peer_token}"})
+    assert collabs_resp.status_code == 200
+    peer_collab = next(c for c in collabs_resp.json() if c["user_id"] == peer["user"]["id"])
+    assert peer_collab["role"] == "VIEWER"
+
+    # Owner accepting own invite doesn't error out
+    owner_accept = client.post(
+        "/api/diagrams/accept-invite",
+        headers={"Authorization": f"Bearer {owner_token}"},
+        json={"token": token},
+    )
+    assert owner_accept.status_code == 200
+
+
+
 def test_websocket_collaboration(client):
     user_email = f"wsuser_{uuid.uuid4().hex[:6]}@case2code.io"
     reg = client.post(
