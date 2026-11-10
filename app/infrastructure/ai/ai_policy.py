@@ -19,6 +19,11 @@ def fold(text: str) -> str:
     return "".join(c for c in nfkd if not unicodedata.combining(c)).lower()
 
 
+# Up to this many humans connected to the room, the AI answers every message without a
+# mention (one person talking to the AI). Above it, human chat is the default.
+AI_AUTO_REPLY_MAX_USERS = 1
+
+
 def is_addressed_to_ai(
     content: str,
     force_ai: bool = False,
@@ -27,15 +32,15 @@ def is_addressed_to_ai(
     """Decides whether a chat message in the room wakes the Senior AI.
 
     - When `active_user_count` is provided:
-      - 1 user in the room (`active_user_count <= 1`): the AI responds automatically
+      - 1 user in the room (AI_AUTO_REPLY_MAX_USERS): the AI responds automatically
         without needing `@ai` or `@senior`.
-      - 2 or more users (`active_user_count >= 2`): human-to-human chat is the default
-        and the AI ONLY responds when explicitly mentioned (`@ai`, `@senior`, `@bot`, `/ai`).
+      - 2 or more users: human-to-human chat is the default and the AI ONLY responds
+        when explicitly mentioned (`@ai`, `@senior`, `@bot`, `/ai`).
     - When `active_user_count` is None: falls back to `force_ai` or explicit mention.
     """
     has_mention = bool(_MENTION_RE.search(content or ""))
     if active_user_count is not None:
-        if active_user_count <= 1:
+        if active_user_count <= AI_AUTO_REPLY_MAX_USERS:
             return True
         return has_mention
     if force_ai:

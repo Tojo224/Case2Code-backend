@@ -765,7 +765,9 @@ class LocalLlmAiProvider(AiProviderPort):
         image_data: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         # Build shared system prompt via helper on GeminiAiProvider
-        system_instruction = GeminiAiProvider.build_uml_system_prompt(current_uml)
+        system_instruction = GeminiAiProvider.build_uml_system_prompt(
+            current_uml, has_image=bool(image_data and image_data.get("data"))
+        )
         timeout = httpx.Timeout(self.timeout, connect=2.5)
 
         async with httpx.AsyncClient(timeout=timeout) as client:
@@ -836,7 +838,16 @@ class GeminiAiProvider(AiProviderPort):
         return f"Cloud Gemini ({self.model})"
 
     @staticmethod
-    def build_uml_system_prompt(current_uml: CanonicalUmlDocument) -> str:
+    def build_uml_system_prompt(current_uml: CanonicalUmlDocument, has_image: bool = True) -> str:
+        # The image-replication rules are ~350 tokens: only send them when an image came along.
+        image_rules = """- When an image is provided (hand-drawn sketch, whiteboard, ER diagram, database screenshot, relational schema):
+  1. The user's intention is ALWAYS to extract and REPLICATE the entire database/diagram into UML classes, attributes, and relationships. Do not wait for the word 'crea'.
+  2. Extract every entity box as a CREATE_CLASS with logical (x, y) coordinates preserving the visual layout (e.g. spread across x: 80..800, y: 80..600).
+  3. Class names MUST be valid alphanumeric PascalCase identifiers without spaces or accents (e.g., 'ProductoEspecial', 'OrdenDeTrabajo', 'PlantillaFabricacion', 'Catalogo').
+  4. For every attribute listed inside the box, generate an ADD_ATTRIBUTE with appropriate Java/SQL types (Long for IDs, String for names/text, LocalDate for dates, Double for amounts, Boolean for flags). Attribute names MUST be camelCase or snake_case without spaces (e.g., 'fechaCreacion', 'precioUnitario'). Mark primary_key: true if it has PK, #, underline, or is 'id'.
+  5. Replicate all relationship lines between entities with their cardinalities.
+  6. Multi-relationships between same pair of tables: assign distinct semantic target_roles (e.g. 'origen', 'destino' or 'rol_1', 'rol_2').
+""" if has_image else ""
         classes_summary = [
             {
                 "id": c.id,
@@ -884,14 +895,7 @@ Allowed Command Types and schemas:
 
 - FULL DOMAIN CREATION: When the user asks for a complete domain or business database (e.g., 'base de datos para una veterinaria', 'e-commerce', 'sistema escolar'), generate ALL core entities, attributes (with primary keys), and relationships needed for a comprehensive, functional schema (typically 5-8 entities). Do not return an incomplete single-class model.
 - MANY-TO-MANY ASSOCIATIVE ENTITIES: When a Many-to-Many relationship exists or is requested between two entities (e.g., Mascota <-> Vacuna, Pedido <-> Producto, Estudiante <-> Curso), ALWAYS generate the explicit intermediate associative class (CREATE_CLASS) representing the junction table (e.g. MascotaVacuna with fechaAplicacion, dosis; DetallePedido with cantidad, precioUnitario; InscripcionCurso with fechaInscripcion), and connect it via ONE_TO_MANY / MANY_TO_ONE relationships from the two primary entities to the intermediate entity.
-- When an image is provided (hand-drawn sketch, whiteboard, ER diagram, database screenshot, relational schema):
-  1. The user's intention is ALWAYS to extract and REPLICATE the entire database/diagram into UML classes, attributes, and relationships. Do not wait for the word 'crea'.
-  2. Extract every entity box as a CREATE_CLASS with logical (x, y) coordinates preserving the visual layout (e.g. spread across x: 80..800, y: 80..600).
-  3. Class names MUST be valid alphanumeric PascalCase identifiers without spaces or accents (e.g., 'ProductoEspecial', 'OrdenDeTrabajo', 'PlantillaFabricacion', 'Catalogo').
-  4. For every attribute listed inside the box, generate an ADD_ATTRIBUTE with appropriate Java/SQL types (Long for IDs, String for names/text, LocalDate for dates, Double for amounts, Boolean for flags). Attribute names MUST be camelCase or snake_case without spaces (e.g., 'fechaCreacion', 'precioUnitario'). Mark primary_key: true if it has PK, #, underline, or is 'id'.
-  5. Replicate all relationship lines between entities with their cardinalities.
-  6. Multi-relationships between same pair of tables: assign distinct semantic target_roles (e.g. 'origen', 'destino' or 'rol_1', 'rol_2').
-
+{image_rules}
 CLARIFICATION RULE ("SI NO SABES, PREGUNTA"):
 - If the image or text is completely ambiguous, blurry, cut off, or key information is missing to make a correct decision:
   Include a "question" field in your JSON output in Spanish explaining what you observed and asking specifically what needs to be clarified.
@@ -908,8 +912,8 @@ Or alternatively, a direct JSON array of UML commands: [ ... ].
 Do not output markdown codeblocks, explanations outside JSON, or any extra text.
 """
 
-    def _build_system_prompt(self, current_uml: CanonicalUmlDocument) -> str:
-        return self.build_uml_system_prompt(current_uml)
+    def _build_system_prompt(self, current_uml: CanonicalUmlDocument, has_image: bool = True) -> str:
+        return self.build_uml_system_prompt(current_uml, has_image=has_image)
 
     async def generate_chat_response(
         self,
@@ -948,7 +952,9 @@ Do not output markdown codeblocks, explanations outside JSON, or any extra text.
         current_uml: CanonicalUmlDocument,
         image_data: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
-        system_instruction = self._build_system_prompt(current_uml)
+        system_instruction = self._build_system_prompt(
+            current_uml, has_image=bool(image_data and image_data.get("data"))
+        )
         parts: List[Dict[str, Any]] = [
             {"text": f"{system_instruction}\n\nUser request: {prompt}"}
         ]

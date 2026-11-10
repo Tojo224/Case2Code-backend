@@ -81,7 +81,7 @@ def _speaker():
 
 async def _advice(orch):
     return await orch._generate_senior_advice(
-        prompt="hola",
+        prompt="¿qué opinás de mi modelo?",  # a real question: bare greetings skip the provider
         speaker=_speaker(),
         active_users=[],
         document=CanonicalUmlDocument(id="d", name="D"),

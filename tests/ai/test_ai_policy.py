@@ -46,6 +46,43 @@ def test_two_or_more_users_require_explicit_mention():
     assert is_addressed_to_ai("che @senior ¿qué opinás?", force_ai=False, active_user_count=3)
 
 
+@pytest.mark.parametrize("text", ["hola", "Gracias!", "@ai ok", "buenas tardes"])
+def test_bare_greetings_are_smalltalk(text):
+    from app.infrastructure.ai.senior_colleague import SeniorColleagueOrchestrator
+    assert SeniorColleagueOrchestrator._is_smalltalk(text)
+
+
+@pytest.mark.parametrize("text", ["hola, creá la clase Cliente", "gracias, ahora agregá precio", "¿qué opinás?"])
+def test_real_requests_are_not_smalltalk(text):
+    from app.infrastructure.ai.senior_colleague import SeniorColleagueOrchestrator
+    assert not SeniorColleagueOrchestrator._is_smalltalk(text)
+
+
+def test_uml_prompt_only_carries_image_rules_when_there_is_an_image():
+    from app.domain.models.canonical_uml import CanonicalUmlDocument
+    from app.infrastructure.ai.ai_provider import GeminiAiProvider
+    doc = CanonicalUmlDocument(id="d", name="D")
+    assert "When an image is provided" in GeminiAiProvider.build_uml_system_prompt(doc, has_image=True)
+    assert "When an image is provided" not in GeminiAiProvider.build_uml_system_prompt(doc, has_image=False)
+
+
+@pytest.mark.parametrize("text", [
+    "dime puedes mejorar la base que tenemos, pero mejorarla en atributos",
+    "@ai quiero que mejores los atributos de la base de datos que tengo",
+    "ajustá la tabla Categoria",
+    "optimizá los atributos de Producto",
+])
+def test_improve_verbs_are_mutation_intents(text):
+    from app.infrastructure.ai.senior_colleague import SeniorColleagueOrchestrator
+    assert SeniorColleagueOrchestrator()._has_mutation_intent(text)
+
+
+@pytest.mark.parametrize("text", ["¿cuál es la mejor opción para esto?", "hola", "¿cómo ves la clase Cliente?"])
+def test_advisory_messages_are_not_mutation_intents(text):
+    from app.infrastructure.ai.senior_colleague import SeniorColleagueOrchestrator
+    assert not SeniorColleagueOrchestrator()._has_mutation_intent(text)
+
+
 @pytest.mark.parametrize("text", ["hacelo", "@ai dale", "Sí, hacelo por favor", "aplicá los cambios", "@ai ¡Hacelo!"])
 def test_confirmations(text):
     assert is_confirmation(text)
