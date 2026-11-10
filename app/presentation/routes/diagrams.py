@@ -4,6 +4,7 @@ import re
 import uuid
 from typing import List, Optional
 from fastapi import (
+    Request,
     APIRouter,
     Depends,
     File,
@@ -63,6 +64,7 @@ from app.presentation.schemas.diagram_schemas import (
 
 logger = logging.getLogger(__name__)
 
+from app.core.rate_limit import ai_limiter, chat_limiter
 from app.core.limits import (
     ALLOWED_IMAGE_MIME_TYPES,
     MAX_CHAT_MESSAGE_CHARS,
@@ -467,6 +469,7 @@ async def execute_command_batch(
 async def process_assistant_prompt(
     diagram_id: str,
     payload: AssistantPromptRequest,
+    request: Request,
     repo: SqlAlchemyDiagramRepository = Depends(get_repository),
     user_repo: SqlAlchemyUserRepository = Depends(get_user_repo),
     current_user: Optional[User] = Depends(get_current_user_optional),
@@ -481,6 +484,15 @@ async def process_assistant_prompt(
         forbidden="No tienes permiso para modificar este proyecto con el asistente.",
         viewer="Los observadores (viewers) no pueden aplicar cambios con el asistente.",
     )
+
+    client_key = current_user.id if current_user else (request.client.host if request and request.client else "anon")
+    retry_after = ai_limiter.hit(f"rest:{client_key}")
+    if retry_after:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Demasiados pedidos al asistente. Esperá unos segundos y probá de nuevo.",
+            headers={"Retry-After": str(int(retry_after) + 1)},
+        )
 
     image_data = None
     if payload.image_base64:
@@ -827,6 +839,17 @@ async def diagram_websocket(
                         )
                         continue
                     if content:
+                        retry_after = chat_limiter.hit(f"{diagram_id}:{user.id}")
+                        if retry_after:
+                            await connection_manager.send_to(
+                                websocket,
+                                {
+                                    "type": "MESSAGE_REJECTED",
+                                    "reason": "rate_limited",
+                                    "retry_after": round(retry_after, 1),
+                                },
+                            )
+                            continue
                         # Access can change while the socket is open (collaborator removed,
                         # role downgraded): decide from fresh data on EVERY chat message, so a
                         # removed member can neither post nor wake the AI.
@@ -868,6 +891,18 @@ async def diagram_websocket(
                         # or when the client forces it (assistant panel). Human-to-human chat
                         # never wakes it.
                         if is_addressed_to_ai(content, bool(msg.get("force_ai", False))):
+                            ai_retry = ai_limiter.hit(f"ws:{user.id}")
+                            if ai_retry:
+                                # The human message was already posted; only the LLM call is refused.
+                                await connection_manager.send_to(
+                                    websocket,
+                                    {
+                                        "type": "MESSAGE_REJECTED",
+                                        "reason": "ai_rate_limited",
+                                        "retry_after": round(ai_retry, 1),
+                                    },
+                                )
+                                continue
                             # Runs in the background: this loop keeps serving cursors/selection/chat.
                             schedule_ai_turn(
                                 diagram_id=diagram_id,

@@ -23,3 +23,9 @@ MAX_BATCH_COMMANDS = _int_env("MAX_BATCH_COMMANDS", 200)
 # One websocket text frame (chat message + JSON envelope).
 MAX_WS_FRAME_CHARS = _int_env("MAX_WS_FRAME_CHARS", 16_000)
 ALLOWED_IMAGE_MIME_TYPES = ("image/png", "image/jpeg", "image/webp", "image/gif")
+
+# Rate limits (sliding window, per user/client).
+CHAT_MESSAGES_PER_WINDOW = _int_env("CHAT_MESSAGES_PER_WINDOW", 20)
+CHAT_WINDOW_S = _int_env("CHAT_WINDOW_S", 10)
+AI_REQUESTS_PER_WINDOW = _int_env("AI_REQUESTS_PER_WINDOW", 6)
+AI_WINDOW_S = _int_env("AI_WINDOW_S", 60)
