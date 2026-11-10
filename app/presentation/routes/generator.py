@@ -1,4 +1,4 @@
-import re
+﻿import re
 import shutil
 import tempfile
 from pathlib import Path
@@ -19,6 +19,7 @@ from app.infrastructure.codegen.compilation_verifier import (
 from app.infrastructure.codegen.flutter_generator import FlutterGenerator
 from app.infrastructure.codegen.spring_boot_generator import SpringBootGenerator
 from app.infrastructure.codegen.sql_generator import SqlGenerator
+from app.infrastructure.docs.data_dictionary import build_data_dictionary
 from app.infrastructure.persistence.diagram_repository import SqlAlchemyDiagramRepository
 from app.infrastructure.persistence.user_repository import SqlAlchemyUserRepository
 from app.presentation.routes.auth import get_current_user_optional, get_user_repo
@@ -118,6 +119,32 @@ def export_sql_script(
         headers={
             "Content-Disposition": f'attachment; filename="{filename}"',
         },
+    )
+
+
+@router.get("/{diagram_id}/export/docs")
+def export_data_dictionary(
+    diagram_id: str,
+    repo: SqlAlchemyDiagramRepository = Depends(get_repository),
+    user_repo: SqlAlchemyUserRepository = Depends(get_user_repo),
+    current_user: Optional[User] = Depends(get_current_user_optional),
+):
+    document = _get_authorized_diagram(diagram_id, repo, user_repo, current_user)
+    if not document.classes:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Diagram must contain at least one class to generate documentation.",
+        )
+
+    author = (getattr(current_user, "name", None) or "Invitado") if current_user else "Invitado"
+    result = build_data_dictionary(document, author=author)
+    safe_name = re.sub(r"[^a-zA-Z0-9_\-]", "_", (document.name or "schema").strip()) or "schema"
+    filename = f"{safe_name}_diccionario_datos.pdf"
+
+    return Response(
+        content=result.pdf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 
