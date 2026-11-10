@@ -21,6 +21,8 @@ class SqlAlchemyChatRepository:
             addressed_to=message.addressed_to,
             ai_engine=message.ai_engine,
             executed_commands=message.executed_commands,
+            suggested_commands=message.suggested_commands,
+            suggested_operations=message.suggested_operations,
             created_at=message.created_at,
         )
         self.db.add(record)
@@ -47,6 +49,8 @@ class SqlAlchemyChatRepository:
                 addressed_to=r.addressed_to,
                 ai_engine=r.ai_engine,
                 executed_commands=r.executed_commands,
+                suggested_commands=r.suggested_commands,
+                suggested_operations=r.suggested_operations,
                 created_at=r.created_at,
             )
             for r in records
