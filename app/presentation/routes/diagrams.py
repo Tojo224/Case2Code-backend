@@ -18,10 +18,12 @@ from fastapi import (
 from sqlalchemy.orm import Session
 
 from app.application.command_bus import command_bus
+from app.application.replay import replay_commands
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.security import decode_access_token
 from app.domain.models.canonical_uml import CanonicalUmlDocument
+from app.domain.models.commands import UmlCommand
 from app.domain.models.chat import ChatHistoryResponse, ChatMessage, SenderType
 from app.domain.models.user import CollaboratorRole, ProjectCollaborator, User
 from app.domain.services.uml_validator import UmlValidationError
@@ -38,6 +40,7 @@ from app.infrastructure.ai.ai_room_runner import (
     schedule_ai_turn,
 )
 from app.infrastructure.ai.senior_colleague import senior_colleague_orchestrator
+from app.infrastructure.collaboration.blocking import run_blocking
 from app.infrastructure.collaboration.room_locks import get_room_ai_lock, get_room_lock
 from app.infrastructure.collaboration.connection_manager import connection_manager
 from app.infrastructure.interchange.xmi_exporter import XmiExporter
@@ -51,6 +54,8 @@ from app.presentation.schemas.diagram_schemas import (
     AssistantPromptRequest,
     AiConfigUpdateRequest,
     AssistantPromptResponse,
+    BatchCommandsRequest,
+    BatchCommandsResponse,
     CommandExecutionResponse,
     CreateDiagramRequest,
     ExecuteCommandRequest,
@@ -269,6 +274,97 @@ def _auto_snapshot_before_edit(
         logger.warning("Auto snapshot skipped for diagram %s: %s", document.id, e)
 
 
+_NOT_FOUND = "Diagram '{}' not found."
+
+
+def _check_edit_access(
+    document: CanonicalUmlDocument,
+    diagram_id: str,
+    user_repo: SqlAlchemyUserRepository,
+    current_user: Optional[User],
+    *,
+    unauthenticated: str,
+    forbidden: str,
+    viewer: str,
+) -> None:
+    """Edit rules shared by every mutating endpoint of a private diagram."""
+    if not document.owner_id:
+        return
+    if not current_user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=unauthenticated)
+    role = user_repo.get_user_role(diagram_id, current_user.id)
+    if not role and document.owner_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=forbidden)
+    if role == CollaboratorRole.VIEWER:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=viewer)
+
+
+def _load_for_edit(
+    repo: SqlAlchemyDiagramRepository,
+    user_repo: SqlAlchemyUserRepository,
+    diagram_id: str,
+    current_user: Optional[User],
+    **messages: str,
+) -> CanonicalUmlDocument:
+    """Blocking section: load the diagram and check the caller may edit it."""
+    document = repo.get_by_id(diagram_id)
+    if not document:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=_NOT_FOUND.format(diagram_id),
+        )
+    _check_edit_access(document, diagram_id, user_repo, current_user, **messages)
+    return document
+
+
+_COMMAND_MESSAGES = dict(
+    unauthenticated="Authentication required to modify this diagram.",
+    forbidden="You do not have permission to modify this diagram.",
+    viewer="Viewers cannot make changes to this diagram.",
+)
+
+
+def _reload_fresh(repo: SqlAlchemyDiagramRepository, diagram_id: str) -> CanonicalUmlDocument:
+    repo.db.expire_all()  # humans/AI saved in the meantime: never trust the identity map
+    fresh = repo.get_by_id(diagram_id)
+    if not fresh:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=_NOT_FOUND.format(diagram_id),
+        )
+    return fresh
+
+
+def _run_single_command(
+    repo: SqlAlchemyDiagramRepository,
+    diagram_id: str,
+    command: UmlCommand,
+    user: Optional[User],
+) -> CanonicalUmlDocument:
+    """Blocking section (call under the room lock): reload, snapshot, dispatch, save."""
+    fresh = _reload_fresh(repo, diagram_id)
+    _auto_snapshot_before_edit(repo, fresh, user)
+    updated_doc = command_bus.dispatch(fresh, command)
+    repo.save(updated_doc)
+    return updated_doc
+
+
+def _run_batch(
+    repo: SqlAlchemyDiagramRepository,
+    diagram_id: str,
+    commands: List[UmlCommand],
+    user: Optional[User],
+):
+    """Blocking section (call under the room lock): reload, replay (skipping failures),
+    snapshot the pre-state and save ONCE. Nothing is saved when nothing applied."""
+    fresh = _reload_fresh(repo, diagram_id)
+    outcome = replay_commands(fresh, commands)
+    if outcome.applied:
+        _auto_snapshot_before_edit(repo, fresh, user)
+        repo.save(outcome.document)
+    return outcome
+
+
 @router.post("/{diagram_id}/commands", response_model=CommandExecutionResponse)
 async def execute_command(
     diagram_id: str,
@@ -277,44 +373,15 @@ async def execute_command(
     user_repo: SqlAlchemyUserRepository = Depends(get_user_repo),
     current_user: Optional[User] = Depends(get_current_user_optional),
 ):
-    document = repo.get_by_id(diagram_id)
-    if not document:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Diagram '{diagram_id}' not found.",
-        )
-
-    if document.owner_id:
-        if not current_user:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Authentication required to modify this diagram.",
-            )
-        role = user_repo.get_user_role(diagram_id, current_user.id)
-        if not role and document.owner_id != current_user.id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="You do not have permission to modify this diagram.",
-            )
-        if role == CollaboratorRole.VIEWER:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Viewers cannot make changes to this diagram.",
-            )
+    await run_blocking(_load_for_edit, repo, user_repo, diagram_id, current_user, **_COMMAND_MESSAGES)
 
     try:
         # Reload-apply-save under the room lock so a concurrent AI/restore edit is never overwritten.
+        # The whole DB section is one blocking call; the broadcast stays on the loop.
         async with get_room_lock(diagram_id):
-            repo.db.expire_all()
-            fresh = repo.get_by_id(diagram_id)
-            if not fresh:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Diagram '{diagram_id}' not found.",
-                )
-            _auto_snapshot_before_edit(repo, fresh, current_user)
-            updated_doc = command_bus.dispatch(fresh, payload.command)
-            repo.save(updated_doc)
+            updated_doc = await run_blocking(
+                _run_single_command, repo, diagram_id, payload.command, current_user
+            )
 
             # Broadcast update to connected peers in real time
             await connection_manager.broadcast_document_update(
@@ -343,6 +410,41 @@ async def execute_command(
         )
 
 
+@router.post("/{diagram_id}/commands/batch", response_model=BatchCommandsResponse)
+async def execute_command_batch(
+    diagram_id: str,
+    payload: BatchCommandsRequest,
+    repo: SqlAlchemyDiagramRepository = Depends(get_repository),
+    user_repo: SqlAlchemyUserRepository = Depends(get_user_repo),
+    current_user: Optional[User] = Depends(get_current_user_optional),
+):
+    """Applies many commands: failing ones are skipped and reported, the document is
+    saved once and broadcast once."""
+    if not payload.commands:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="The commands list must not be empty.",
+        )
+    await run_blocking(_load_for_edit, repo, user_repo, diagram_id, current_user, **_COMMAND_MESSAGES)
+
+    async with get_room_lock(diagram_id):
+        outcome = await run_blocking(_run_batch, repo, diagram_id, payload.commands, current_user)
+        if outcome.applied:
+            await connection_manager.broadcast_document_update(
+                diagram_id=diagram_id,
+                document_dict=outcome.document.model_dump(mode="json"),
+            )
+
+    return BatchCommandsResponse(
+        document=outcome.document,
+        applied=outcome.applied,
+        skipped=[
+            {"command": cmd.model_dump(mode="json"), "reason": reason}
+            for cmd, reason in outcome.skipped
+        ],
+    )
+
+
 @router.post("/{diagram_id}/assistant", response_model=AssistantPromptResponse)
 async def process_assistant_prompt(
     diagram_id: str,
@@ -351,30 +453,16 @@ async def process_assistant_prompt(
     user_repo: SqlAlchemyUserRepository = Depends(get_user_repo),
     current_user: Optional[User] = Depends(get_current_user_optional),
 ):
-    document = repo.get_by_id(diagram_id)
-    if not document:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Diagram '{diagram_id}' not found.",
-        )
-
-    if document.owner_id:
-        if not current_user:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Debes iniciar sesión para usar el asistente en este proyecto.",
-            )
-        role = user_repo.get_user_role(diagram_id, current_user.id)
-        if not role and document.owner_id != current_user.id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="No tienes permiso para modificar este proyecto con el asistente.",
-            )
-        if role == CollaboratorRole.VIEWER:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Los observadores (viewers) no pueden aplicar cambios con el asistente.",
-            )
+    document = await run_blocking(
+        _load_for_edit,
+        repo,
+        user_repo,
+        diagram_id,
+        current_user,
+        unauthenticated="Debes iniciar sesión para usar el asistente en este proyecto.",
+        forbidden="No tienes permiso para modificar este proyecto con el asistente.",
+        viewer="Los observadores (viewers) no pueden aplicar cambios con el asistente.",
+    )
 
     image_data = None
     if payload.image_base64:
@@ -414,8 +502,11 @@ async def process_assistant_prompt(
             reply=reply,
             speaker_name=current_user.name if current_user else "equipo",
         )
-        repo.db.expire_all()
-        final_doc = repo.get_by_id(diagram_id) or planned_doc
+        def reload_final():
+            repo.db.expire_all()
+            return repo.get_by_id(diagram_id)
+
+        final_doc = await run_blocking(reload_final) or planned_doc
 
     return AssistantPromptResponse(
         success=bool(executed_commands),
@@ -473,29 +564,16 @@ async def import_diagram_xmi(
     user_repo: SqlAlchemyUserRepository = Depends(get_user_repo),
     current_user: Optional[User] = Depends(get_current_user_optional),
 ):
-    document = repo.get_by_id(diagram_id)
-    if not document:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Diagram '{diagram_id}' not found.",
-        )
-    if document.owner_id:
-        if not current_user:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Inicia sesión para modificar este proyecto.",
-            )
-        role = user_repo.get_user_role(diagram_id, current_user.id)
-        if not role and document.owner_id != current_user.id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="No tienes permiso para modificar este proyecto.",
-            )
-        if role == CollaboratorRole.VIEWER:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Los observadores (viewers) no pueden importar diagramas.",
-            )
+    await run_blocking(
+        _load_for_edit,
+        repo,
+        user_repo,
+        diagram_id,
+        current_user,
+        unauthenticated="Inicia sesión para modificar este proyecto.",
+        forbidden="No tienes permiso para modificar este proyecto.",
+        viewer="Los observadores (viewers) no pueden importar diagramas.",
+    )
 
     content_bytes = await file.read()
     try:
@@ -503,23 +581,31 @@ async def import_diagram_xmi(
     except UnicodeDecodeError:
         xml_str = content_bytes.decode("latin-1")
 
-    try:
-        updated_document = XmiImporter.import_xmi(xml_str, document)
-    except Exception as e:
-        logger.error(f"Error parsing XMI file: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Error parsing XMI file: {str(e)}",
+    def import_on_fresh() -> CanonicalUmlDocument:
+        # Read-modify-write on a FRESH document (the one loaded for the permission check may
+        # be stale by now): parse, snapshot the pre-state so the import is undoable, save.
+        fresh = _reload_fresh(repo, diagram_id)
+        try:
+            updated = XmiImporter.import_xmi(xml_str, fresh.model_copy(deep=True))
+        except Exception as e:
+            logger.error(f"Error parsing XMI file: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Error parsing XMI file: {str(e)}",
+            )
+        _auto_snapshot_before_edit(repo, fresh, current_user)
+        updated.version += 1
+        repo.save(updated)
+        return updated
+
+    async with get_room_lock(diagram_id):
+        updated_document = await run_blocking(import_on_fresh)
+
+        # Broadcast update to all active web sockets
+        await connection_manager.broadcast_document_update(
+            diagram_id=diagram_id,
+            document_dict=updated_document.model_dump(mode="json"),
         )
-
-    updated_document.version += 1
-    repo.save(updated_document)
-
-    # Broadcast update to all active web sockets
-    await connection_manager.broadcast_document_update(
-        diagram_id=diagram_id,
-        document_dict=updated_document.model_dump(mode="json"),
-    )
 
     return updated_document
 
@@ -706,15 +792,19 @@ async def diagram_websocket(
                         # Access can change while the socket is open (collaborator removed,
                         # role downgraded): decide from fresh data on EVERY chat message, so a
                         # removed member can neither post nor wake the AI.
-                        db.expire_all()
-                        fresh_doc = diag_repo.get_by_id(diagram_id)
-                        if fresh_doc is None:
+                        def recheck_access():
+                            db.expire_all()
+                            fresh_doc = diag_repo.get_by_id(diagram_id)
+                            if fresh_doc is None:
+                                return None
+                            sender_role = user_repo.get_user_role(diagram_id, user.id)
+                            return can_user_edit_via_ai(fresh_doc.owner_id, user.id, sender_role)
+
+                        access = await run_blocking(recheck_access)
+                        if access is None:
                             await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
                             break
-                        sender_role = user_repo.get_user_role(diagram_id, user.id)
-                        in_room, can_edit = can_user_edit_via_ai(
-                            fresh_doc.owner_id, user.id, sender_role
-                        )
+                        in_room, can_edit = access
                         if not in_room:
                             await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
                             break
@@ -730,7 +820,7 @@ async def diagram_websocket(
                             content=content,
                             addressed_to=msg.get("addressed_to"),
                         )
-                        chat_repo.add_message(user_msg)
+                        await run_blocking(chat_repo.add_message, user_msg)
                         await connection_manager.broadcast_chat_message(
                             diagram_id,
                             user_msg.model_dump(mode="json"),
