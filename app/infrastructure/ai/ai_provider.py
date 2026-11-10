@@ -919,7 +919,12 @@ Do not output markdown codeblocks, explanations outside JSON, or any extra text.
         self,
         system_prompt: str,
         user_message: str,
+        *,
+        timeout: Optional[float] = None,
+        max_output_tokens: Optional[int] = None,
     ) -> Optional[str]:
+        # Optional overrides are for long structured answers (the AI data dictionary); chat keeps
+        # its short defaults. The API latency varies a lot (1s to 20s for the same request).
         payload = {
             "contents": [
                 {
@@ -929,10 +934,10 @@ Do not output markdown codeblocks, explanations outside JSON, or any extra text.
             ],
             "generationConfig": {
                 "temperature": 0.4,
-                "maxOutputTokens": 2048,
+                "maxOutputTokens": max_output_tokens or 2048,
             },
         }
-        timeout = httpx.Timeout(10.0, connect=3.0)
+        timeout = httpx.Timeout(timeout or 10.0, connect=3.0)
         async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.post(self.endpoint, json=payload, headers=self._headers())
             resp.raise_for_status()

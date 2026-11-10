@@ -124,3 +124,58 @@ def test_endpoint_rate_limited(client, diagram_repo, monkeypatch):
     monkeypatch.setattr(ai_limiter, "hit", lambda key: 7.2)
     r = client.get(f"/api/diagrams/{doc.id}/export/docs/ai")
     assert r.status_code == 429 and r.headers["retry-after"] == "8"
+
+
+# --- regression: the model answers per column with {"d": ..., "e": ...} -----------------------
+
+import asyncio as _asyncio
+import json as _json
+
+from app.domain.models.canonical_uml import CanonicalUmlDocument as _Doc, UmlAttribute as _Attr, UmlClass as _Cls
+from app.infrastructure.docs import ai_enrichment as _ai
+
+
+def test_column_answers_as_objects_are_parsed_and_arrays_still_work():
+    included = {"cliente": {"nombre", "email"}}
+    text = _json.dumps({
+        "tablas": {"cliente": {"d": "compradores", "c": {
+            "nombre": {"d": "nombre completo del comprador", "e": "Juan Pérez"},
+            "email": ["correo del comprador", "juan@correo.com"],
+        }}}
+    })
+    result = _ai.parse_enrichment(text, included)
+    assert result.columns["cliente"]["nombre"] == ("nombre completo del comprador", "Juan Pérez")
+    assert result.columns["cliente"]["email"] == ("correo del comprador", "juan@correo.com")
+
+
+def test_providers_that_accept_it_get_a_longer_timeout_and_token_ceiling():
+    seen = {}
+
+    class LongAnswerProvider:
+        provider_name = "stub-long"
+
+        async def generate_chat_response(self, system, user, *, timeout=None, max_output_tokens=None):
+            seen.update(timeout=timeout, max_output_tokens=max_output_tokens)
+            return _json.dumps({"tablas": {"cliente": {"d": "compradores", "c": {}}}})
+
+    class PlainProvider:
+        provider_name = "stub-plain"
+
+        async def generate_chat_response(self, system, user):
+            seen["plain_called"] = True
+            return None
+
+    async def passthrough(provider, started_at, call):
+        return await call()
+
+    doc = _Doc(id="d-long", name="Tienda", classes=[
+        _Cls(id="c1", name="Cliente", attributes=[
+            _Attr(id="a0", name="id", type="Long", primary_key=True, nullable=False),
+            _Attr(id="a1", name="nombre", type="String"),
+        ]),
+    ])
+    enrichment, status = _asyncio.run(_ai.enrich_document(doc, [PlainProvider(), LongAnswerProvider()], passthrough))
+    assert status == "ai" and enrichment is not None
+    assert seen["plain_called"] is True  # the 2-argument provider is still called the old way
+    assert seen["timeout"] == _ai.AI_CALL_TIMEOUT_S
+    assert seen["max_output_tokens"] == _ai.AI_MAX_OUTPUT_TOKENS

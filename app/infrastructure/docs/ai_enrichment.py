@@ -1,6 +1,7 @@
 """Enriquecimiento opcional del diccionario de datos con un LLM (una llamada por descarga)."""
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import time
@@ -15,14 +16,18 @@ MAX_TABLES = 25
 MAX_COLUMNS = 70
 MAX_AI_RULES = 4
 CACHE_MAX = 50
+# Just under the provider deadline enforced by the orchestrator (AI_PROVIDER_DEADLINE_S = 25s).
+AI_CALL_TIMEOUT_S = 23.0
+AI_MAX_OUTPUT_TOKENS = 4096
 
 SYSTEM_PROMPT = (
     "Eres un analista de datos que redacta un diccionario de datos en español.\n"
     "Recibirás un JSON compacto con el modelo: {\"modelo\":nombre,\"tablas\":[{\"t\":tabla,\"c\":[[columna,tipo],...]}]}.\n"
     "Responde SOLO con JSON válido, sin markdown ni texto adicional, con esta forma exacta:\n"
-    "{\"tablas\":{\"cliente\":{\"d\":\"descripción corta de la tabla\",\"c\":{\"nombre\":[\"descripción\",\"ejemplo\"]}}},"
+    "{\"tablas\":{\"cliente\":{\"d\":\"descripción corta de la tabla\",\"c\":{\"nombre\":{\"d\":\"descripción del campo\",\"e\":\"un solo ejemplo\"}}}},"
     "\"reglas\":[{\"t\":\"regla de negocio\",\"e\":[\"ejemplo1\",\"ejemplo2\"]}]}\n"
     "Reglas de estilo:\n"
+    "- en cada columna \"d\" explica QUÉ es el campo (no es un valor) y \"e\" es un único valor de ejemplo.\n"
     "- descripciones en español, en minúsculas, máximo 12 palabras.\n"
     "- ejemplos realistas y cortos, adecuados al dominio del modelo.\n"
     "- hasta 4 reglas de negocio útiles para el dominio.\n"
@@ -91,10 +96,16 @@ def parse_enrichment(text: Optional[str], included: Included) -> DictionaryEnric
                 if isinstance(cols, dict):
                     for cname, cval in cols.items():
                         ckey = str(cname).strip().lower()
-                        if ckey not in included[key] or not isinstance(cval, (list, tuple)) or len(cval) < 2:
+                        if ckey not in included[key]:
                             continue
-                        d = _clean(cval[0], 140).lower()
-                        e = _clean(cval[1], 60)
+                        if isinstance(cval, dict):
+                            d_raw, e_raw = cval.get("d"), cval.get("e")
+                        elif isinstance(cval, (list, tuple)) and len(cval) >= 2:
+                            d_raw, e_raw = cval[0], cval[1]  # older / looser answer shape
+                        else:
+                            continue
+                        d = _clean(d_raw, 140).lower()
+                        e = _clean(e_raw, 60)
                         if d or e:
                             result.columns.setdefault(key, {})[ckey] = (d, e)
 
@@ -146,9 +157,22 @@ async def enrich_document(document, chain, guarded_call) -> Tuple[Optional[Dicti
         return None, "fallback"
     started_at = time.monotonic()
     for provider in chain:
+        # Providers that accept it get a longer timeout and token ceiling (the answer is a
+        # structured document and the API latency is erratic); others use their defaults.
+        try:
+            accepted = inspect.signature(provider.generate_chat_response).parameters
+        except (TypeError, ValueError):
+            accepted = {}
+        extra = {}
+        if "timeout" in accepted:
+            extra["timeout"] = AI_CALL_TIMEOUT_S
+        if "max_output_tokens" in accepted:
+            extra["max_output_tokens"] = AI_MAX_OUTPUT_TOKENS
         try:
             raw = await guarded_call(
-                provider, started_at, lambda p=provider: p.generate_chat_response(system, user)
+                provider,
+                started_at,
+                lambda p=provider, kw=extra: p.generate_chat_response(system, user, **kw),
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("Enriquecimiento IA fallo con %s: %s", getattr(provider, "provider_name", "?"), exc)
