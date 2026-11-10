@@ -35,6 +35,9 @@ def _new_diagram(client):
 def test_ws_chat_flood_is_rejected_after_the_window_budget(client, monkeypatch):
     monkeypatch.setattr(rate_limit, "chat_limiter", SlidingWindowLimiter(3, 60))
     monkeypatch.setattr("app.presentation.routes.diagrams.chat_limiter", rate_limit.chat_limiter)
+    # A lone user now wakes the AI on every message; keep it asleep so only the chat limiter
+    # is under test (no typing indicators or AI replies interleaved with the frames).
+    monkeypatch.setattr("app.presentation.routes.diagrams.is_addressed_to_ai", lambda *a, **k: False)
     diagram_id = _new_diagram(client)
     with client.websocket_connect(f"/api/diagrams/{diagram_id}/ws") as ws:
         json.loads(ws.receive_text())

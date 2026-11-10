@@ -174,11 +174,16 @@ def test_removed_collaborator_cannot_post_plain_chat_messages(client):
 
 
 def test_viewer_can_still_chat_without_waking_the_ai(client):
-    diagram_id, _, collab_token, _, _ = _private_room_with_collaborator(client, "VIEWER")
+    diagram_id, owner_h, collab_token, _, _ = _private_room_with_collaborator(client, "VIEWER")
+    owner_token = owner_h["Authorization"].split(" ", 1)[1]
+    # With 2+ people in the room human chat is the default and the AI needs a mention. (A lone
+    # user wakes it automatically, which would make this assertion race the background turn.)
     with patch(PATCH_TARGET, new_callable=AsyncMock) as mock_ai:
-        with client.websocket_connect(f"/api/diagrams/{diagram_id}/ws?token={collab_token}") as ws:
-            json.loads(ws.receive_text())
-            ws.send_text(json.dumps({"type": "SEND_CHAT_MESSAGE", "content": "hola equipo"}))
-            echoed = json.loads(ws.receive_text())
+        with client.websocket_connect(f"/api/diagrams/{diagram_id}/ws?token={owner_token}") as owner_ws:
+            json.loads(owner_ws.receive_text())
+            with client.websocket_connect(f"/api/diagrams/{diagram_id}/ws?token={collab_token}") as ws:
+                json.loads(ws.receive_text())
+                ws.send_text(json.dumps({"type": "SEND_CHAT_MESSAGE", "content": "hola equipo"}))
+                echoed = json.loads(ws.receive_text())
     assert echoed["type"] == "CHAT_MESSAGE" and echoed["message"]["content"] == "hola equipo"
     mock_ai.assert_not_called()
