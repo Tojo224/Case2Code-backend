@@ -27,6 +27,13 @@ class Settings(BaseSettings):
         "AI_ALLOWED_LLM_HOSTS", "localhost,127.0.0.1,host.docker.internal,ollama"
     )
     LOCAL_LLM_TIMEOUT: float = float(os.getenv("LOCAL_LLM_TIMEOUT", "15.0"))
+    # Hard deadline for ONE provider call and for the whole provider chain of a turn.
+    # They bound how long a hung LLM can hold the room's AI lock.
+    AI_PROVIDER_DEADLINE_S: float = float(os.getenv("AI_PROVIDER_DEADLINE_S", "25.0"))
+    AI_CHAIN_DEADLINE_S: float = float(os.getenv("AI_CHAIN_DEADLINE_S", "45.0"))
+    # Circuit breaker per provider: open after N consecutive failures, retry after the cooldown.
+    AI_BREAKER_FAILURES: int = int(os.getenv("AI_BREAKER_FAILURES", "3"))
+    AI_BREAKER_COOLDOWN_S: float = float(os.getenv("AI_BREAKER_COOLDOWN_S", "60.0"))
 
     GEMINI_API_KEY: Optional[str] = os.getenv("GEMINI_API_KEY", None)
     GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")

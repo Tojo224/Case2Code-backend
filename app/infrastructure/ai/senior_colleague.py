@@ -1,7 +1,9 @@
+import asyncio
 from dataclasses import dataclass, field
 import logging
+import time
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from pydantic import TypeAdapter
 
@@ -32,6 +34,7 @@ from app.infrastructure.ai.ai_provider import (
     RuleBasedAiProvider,
 )
 from app.infrastructure.ai.ai_uml_interpreter import AiUmlInterpreter
+from app.infrastructure.ai.circuit_breaker import CircuitBreaker
 from app.infrastructure.persistence.ai_memory_repository import (
     AiRoomMemory,
     SqlAlchemyAiMemoryRepository,
@@ -100,6 +103,7 @@ class SeniorColleagueOrchestrator:
             else None
         )
         self.provider_mode: str = settings.AI_PROVIDER_MODE.lower().strip()
+        self._breakers: Dict[str, CircuitBreaker] = {}
         # Telemetry only (shown by GET /ai/config); never used to label a message.
         self.last_used_engine: str = self.local_provider.provider_name
 
@@ -155,6 +159,42 @@ class SeniorColleagueOrchestrator:
                 chain.append(self.gemini_provider)
         return chain
 
+    def _breaker_for(self, provider: AiProviderPort) -> CircuitBreaker:
+        key = provider.provider_name
+        breaker = self._breakers.get(key)
+        if breaker is None:
+            breaker = CircuitBreaker(settings.AI_BREAKER_FAILURES, settings.AI_BREAKER_COOLDOWN_S)
+            self._breakers[key] = breaker
+        return breaker
+
+    async def _guarded_call(
+        self,
+        provider: AiProviderPort,
+        chain_started_at: float,
+        call: Callable[[], Awaitable[Any]],
+    ) -> Any:
+        """Runs one provider call under the circuit breaker and the deadlines.
+
+        Raises RuntimeError when the provider is skipped (breaker open or chain budget
+        spent) and asyncio.TimeoutError when it overruns; callers treat both like any
+        other provider failure and move on to the next provider / the rule engine.
+        """
+        breaker = self._breaker_for(provider)
+        if not breaker.allow():
+            raise RuntimeError("circuit open")
+        remaining = settings.AI_CHAIN_DEADLINE_S - (time.monotonic() - chain_started_at)
+        if remaining <= 0:
+            # Not the provider's fault: release a half-open probe without counting a failure.
+            breaker.release_probe()
+            raise RuntimeError("chain deadline exhausted")
+        try:
+            result = await asyncio.wait_for(call(), timeout=min(settings.AI_PROVIDER_DEADLINE_S, remaining))
+        except Exception:
+            breaker.record_failure()
+            raise
+        breaker.record_success()
+        return result
+
     async def _run_interpreter(
         self, prompt_to_run: str, target_doc: CanonicalUmlDocument
     ) -> Tuple[CanonicalUmlDocument, List[UmlCommand], str, str]:
@@ -163,9 +203,14 @@ class SeniorColleagueOrchestrator:
         `target_doc` is MUTATED by the interpreter: callers pass a private copy.
         Returns (doc, commands, reply, engine_name).
         """
+        started_at = time.monotonic()
         for cand_provider in self._get_provider_chain():
             try:
-                raw = await cand_provider.generate_commands(prompt_to_run, target_doc)
+                raw = await self._guarded_call(
+                    cand_provider,
+                    started_at,
+                    lambda p=cand_provider: p.generate_commands(prompt_to_run, target_doc),
+                )
                 cmds = raw.get("commands", []) if isinstance(raw, dict) else (raw if isinstance(raw, list) else [])
                 question = raw.get("question") if isinstance(raw, dict) else None
                 if cmds or question:
@@ -498,9 +543,14 @@ class SeniorColleagueOrchestrator:
             + f"Mensaje de {speaker_name}: {prompt}"
         )
 
+        started_at = time.monotonic()
         for cand_provider in self._get_provider_chain():
             try:
-                raw_reply = await cand_provider.generate_chat_response(system_prompt, user_msg)
+                raw_reply = await self._guarded_call(
+                    cand_provider,
+                    started_at,
+                    lambda p=cand_provider: p.generate_chat_response(system_prompt, user_msg),
+                )
                 if raw_reply:
                     prefix = f"@{speaker.name}, " if f"@{speaker.name}" not in raw_reply else ""
                     return f"{prefix}{raw_reply}", cand_provider.provider_name
