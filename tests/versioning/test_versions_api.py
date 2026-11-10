@@ -160,3 +160,52 @@ def test_human_edit_takes_a_throttled_auto_snapshot_of_the_state_before_it(clien
     # It captured the state BEFORE the first edit (no classes yet), authored by the editor.
     assert versions[0]["class_count"] == 0
     assert versions[0]["author_name"] == "Editor"
+
+
+@pytest.mark.asyncio
+async def test_event_loop_keeps_ticking_during_slow_service_calls(client, team, monkeypatch):
+    """Every versions route must run its DB work off the event loop."""
+    import asyncio
+    import time
+
+    import httpx
+
+    from app.application.services.version_service import DiagramVersionService
+    from app.main import app
+
+    delay = 0.4
+    monkeypatch.setattr(
+        DiagramVersionService, "list_versions", lambda self, *a, **k: (time.sleep(delay), [])[1]
+    )
+    monkeypatch.setattr(
+        DiagramVersionService, "restore", lambda self, *a, **k: (time.sleep(delay), (_ for _ in ()).throw(RuntimeError("x")))[1]
+    )
+
+    ticks = []
+    stop = asyncio.Event()
+
+    async def ticker():
+        while not stop.is_set():
+            ticks.append(time.monotonic())
+            await asyncio.sleep(0.02)
+
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+        task = asyncio.create_task(ticker())
+        await asyncio.sleep(0.05)
+        start = len(ticks)
+        t0 = time.monotonic()
+        listing = await ac.get(_url(team), headers=team["owner"]["headers"])
+        mid = len(ticks)
+        restore = await ac.post(_url(team, "/1/restore"), headers=team["owner"]["headers"])
+        restore_ticks = len(ticks) - mid
+        elapsed = time.monotonic() - t0
+        stop.set()
+        await task
+
+    assert listing.status_code == 200 and restore.status_code == 500
+    assert elapsed >= 2 * delay
+    # A blocked loop would yield ~0 ticks across 0.8s; a free one yields many.
+    assert len(ticks) - start >= 10
+    # restore was an async handler calling the sync service directly: it froze the loop.
+    assert restore_ticks >= 5

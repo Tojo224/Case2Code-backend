@@ -18,6 +18,7 @@ from app.domain.models.versioning import (
     VersionKind,
     VersionNotFoundError,
 )
+from app.infrastructure.collaboration.blocking import run_blocking
 from app.infrastructure.collaboration.connection_manager import connection_manager
 from app.infrastructure.collaboration.room_locks import get_room_lock
 from app.infrastructure.persistence.diagram_repository import SqlAlchemyDiagramRepository
@@ -81,7 +82,7 @@ def _not_found(exc: Exception) -> HTTPException:
 
 
 @router.get("", response_model=List[DiagramVersion])
-def list_versions(
+async def list_versions(
     diagram_id: str,
     limit: int = Query(default=50, ge=1, le=200),
     db: Session = Depends(get_db),
@@ -89,12 +90,15 @@ def list_versions(
     user_repo: SqlAlchemyUserRepository = Depends(get_user_repo),
     current_user: Optional[User] = Depends(get_current_user_optional),
 ):
-    _authorize(diagram_id, db, user_repo, current_user, write=False)
-    return service.list_versions(diagram_id, limit=limit)
+    def work():
+        _authorize(diagram_id, db, user_repo, current_user, write=False)
+        return service.list_versions(diagram_id, limit=limit)
+
+    return await run_blocking(work)
 
 
 @router.post("", response_model=DiagramVersion, status_code=status.HTTP_201_CREATED)
-def create_version(
+async def create_version(
     diagram_id: str,
     payload: CreateVersionRequest,
     db: Session = Depends(get_db),
@@ -102,21 +106,24 @@ def create_version(
     user_repo: SqlAlchemyUserRepository = Depends(get_user_repo),
     current_user: Optional[User] = Depends(get_current_user_optional),
 ):
-    document = _authorize(diagram_id, db, user_repo, current_user, write=True)
-    author_id, author_name = _author(current_user, payload.author_name)
-    return service.create_snapshot(
-        document,
-        author_id=author_id,
-        author_name=author_name,
-        author_type=VersionAuthorType.USER,
-        kind=VersionKind.CHECKPOINT,
-        label=(payload.label or "").strip() or None,
-        message=(payload.message or "").strip() or None,
-    )
+    def work():
+        document = _authorize(diagram_id, db, user_repo, current_user, write=True)
+        author_id, author_name = _author(current_user, payload.author_name)
+        return service.create_snapshot(
+            document,
+            author_id=author_id,
+            author_name=author_name,
+            author_type=VersionAuthorType.USER,
+            kind=VersionKind.CHECKPOINT,
+            label=(payload.label or "").strip() or None,
+            message=(payload.message or "").strip() or None,
+        )
+
+    return await run_blocking(work)
 
 
 @router.get("/{number}", response_model=DiagramVersionDetail)
-def get_version(
+async def get_version(
     diagram_id: str,
     number: int,
     db: Session = Depends(get_db),
@@ -124,15 +131,18 @@ def get_version(
     user_repo: SqlAlchemyUserRepository = Depends(get_user_repo),
     current_user: Optional[User] = Depends(get_current_user_optional),
 ):
-    _authorize(diagram_id, db, user_repo, current_user, write=False)
-    try:
-        return service.get_version(diagram_id, number)
-    except VersionNotFoundError as exc:
-        raise _not_found(exc)
+    def work():
+        _authorize(diagram_id, db, user_repo, current_user, write=False)
+        try:
+            return service.get_version(diagram_id, number)
+        except VersionNotFoundError as exc:
+            raise _not_found(exc)
+
+    return await run_blocking(work)
 
 
 @router.get("/{number}/diff", response_model=VersionDiff)
-def diff_version(
+async def diff_version(
     diagram_id: str,
     number: int,
     against: str = Query(default="current"),
@@ -141,20 +151,23 @@ def diff_version(
     user_repo: SqlAlchemyUserRepository = Depends(get_user_repo),
     current_user: Optional[User] = Depends(get_current_user_optional),
 ):
-    _authorize(diagram_id, db, user_repo, current_user, write=False)
-    to_number: Optional[int] = None
-    if against != "current":
+    def work():
+        _authorize(diagram_id, db, user_repo, current_user, write=False)
+        to_number: Optional[int] = None
+        if against != "current":
+            try:
+                to_number = int(against)
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="El parámetro against debe ser current o un número de versión.",
+                )
         try:
-            to_number = int(against)
-        except ValueError:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="El parámetro against debe ser current o un número de versión.",
-            )
-    try:
-        return service.diff(diagram_id, number, to_number)
-    except VersionNotFoundError as exc:
-        raise _not_found(exc)
+            return service.diff(diagram_id, number, to_number)
+        except VersionNotFoundError as exc:
+            raise _not_found(exc)
+
+    return await run_blocking(work)
 
 
 @router.post("/{number}/restore", response_model=CanonicalUmlDocument)
@@ -167,12 +180,13 @@ async def restore_version(
     user_repo: SqlAlchemyUserRepository = Depends(get_user_repo),
     current_user: Optional[User] = Depends(get_current_user_optional),
 ):
-    _authorize(diagram_id, db, user_repo, current_user, write=True)
+    await run_blocking(_authorize, diagram_id, db, user_repo, current_user, write=True)
     author_id, author_name = _author(current_user)
     expected = payload.expected_document_version if payload else None
     async with get_room_lock(diagram_id):
         try:
-            restored = service.restore(
+            restored = await run_blocking(
+                service.restore,
                 diagram_id,
                 number,
                 author_id=author_id,
@@ -184,8 +198,9 @@ async def restore_version(
             raise _not_found(exc)
         except VersionConflictError as exc:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+        document_dict = await run_blocking(restored.model_dump, mode="json")
         await connection_manager.broadcast_document_update(
             diagram_id=diagram_id,
-            document_dict=restored.model_dump(mode="json"),
+            document_dict=document_dict,
         )
     return restored
