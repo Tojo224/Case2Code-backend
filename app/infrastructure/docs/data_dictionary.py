@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import io
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER
@@ -41,6 +41,17 @@ class DictionaryResult:
     content_pages: int
     total_pages: int
     scale: float
+
+
+@dataclass
+class DictionaryEnrichment:
+    """Texto redactado por IA; lo que falte queda con la heuristica. Claves en minusculas."""
+    table_descriptions: Dict[str, str] = field(default_factory=dict)
+    columns: Dict[str, Dict[str, Tuple[str, str]]] = field(default_factory=dict)
+    rules: List[Tuple[str, List[str]]] = field(default_factory=list)
+
+    def is_empty(self) -> bool:
+        return not (self.table_descriptions or self.columns or self.rules)
 
 
 # ---------------------------------------------------------------- helpers
@@ -247,7 +258,10 @@ class _Doc(BaseDocTemplate):
 
 
 # ---------------------------------------------------------------- build
-def _build_pdf(document, tables, rules, author, today, scale) -> Tuple[bytes, int, int]:
+def _build_pdf(document, tables, rules, author, today, scale,
+               enrichment: Optional[DictionaryEnrichment] = None) -> Tuple[bytes, int, int]:
+    ai_tables = enrichment.table_descriptions if enrichment else {}
+    ai_cols = enrichment.columns if enrichment else {}
     project = document.name
     slug = _slug(project)
     pw, ph = landscape(A4)
@@ -335,6 +349,8 @@ def _build_pdf(document, tables, rules, author, today, scale) -> Tuple[bytes, in
                     f"{t.foreign_keys[0].target_table.lower()} y {t.foreign_keys[1].target_table.lower()}.")
         else:
             desc = f"almacena los registros de {tname}."
+        desc = ai_tables.get(tname) or desc
+        t_ai_cols = ai_cols.get(tname, {})
         story.append(Paragraph(_esc(desc), st_body))
         story.append(Spacer(1, 3 * scale))
         fks = {fk.column_name: fk.target_table for fk in t.foreign_keys}
@@ -347,6 +363,10 @@ def _build_pdf(document, tables, rules, author, today, scale) -> Tuple[bytes, in
                 describe_column(c.name, t.name, is_pk=c.primary_key, fk_target=fks.get(c.name), nullable=c.nullable),
                 example_value(c.name, dt, is_pk=c.primary_key, is_fk=is_fk),
             ]
+            ai = t_ai_cols.get(c.name.lower())
+            if ai and not c.primary_key and not is_fk:
+                cells[4] = ai[0] or cells[4]
+                cells[5] = ai[1] or cells[5]
             data.append([Paragraph(_esc(x), st_cell) for x in cells])
         tbl = Table(data, colWidths=col_w, repeatRows=1)
         tbl.setStyle(TableStyle([
@@ -372,12 +392,16 @@ def _build_pdf(document, tables, rules, author, today, scale) -> Tuple[bytes, in
 
 
 def build_data_dictionary(document: CanonicalUmlDocument, *, author: str,
-                          today: Optional[date] = None) -> DictionaryResult:
+                          today: Optional[date] = None,
+                          enrichment: Optional[DictionaryEnrichment] = None) -> DictionaryResult:
     tables = SqlGenerator()._build_relational_schema(document)
     rules = build_rules(document, tables)
+    if enrichment and enrichment.rules:
+        ai_rules = [(t.lower(), [e.lower() for e in ex]) for t, ex in enrichment.rules[:4]]
+        rules = (ai_rules + rules)[:MAX_RULES]
     last: Optional[DictionaryResult] = None
     for scale in SCALES:
-        pdf, block_page, _last_page = _build_pdf(document, tables, rules, author, today, scale)
+        pdf, block_page, _last_page = _build_pdf(document, tables, rules, author, today, scale, enrichment)
         total = _count_pages(pdf)
         index_pages = max(1, block_page - 2)
         content = total - 1 - index_pages

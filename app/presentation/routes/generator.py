@@ -3,7 +3,7 @@ import shutil
 import tempfile
 from pathlib import Path
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
 from sqlalchemy.orm import Session
@@ -19,6 +19,10 @@ from app.infrastructure.codegen.compilation_verifier import (
 from app.infrastructure.codegen.flutter_generator import FlutterGenerator
 from app.infrastructure.codegen.spring_boot_generator import SpringBootGenerator
 from app.infrastructure.codegen.sql_generator import SqlGenerator
+from app.core.rate_limit import ai_limiter
+from app.infrastructure.ai.senior_colleague import senior_colleague_orchestrator
+from app.infrastructure.collaboration.blocking import run_blocking
+from app.infrastructure.docs import ai_enrichment
 from app.infrastructure.docs.data_dictionary import build_data_dictionary
 from app.infrastructure.persistence.diagram_repository import SqlAlchemyDiagramRepository
 from app.infrastructure.persistence.user_repository import SqlAlchemyUserRepository
@@ -145,6 +149,57 @@ def export_data_dictionary(
         content=result.pdf,
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/{diagram_id}/export/docs/ai")
+async def export_data_dictionary_ai(
+    diagram_id: str,
+    request: Request,
+    repo: SqlAlchemyDiagramRepository = Depends(get_repository),
+    user_repo: SqlAlchemyUserRepository = Depends(get_user_repo),
+    current_user: Optional[User] = Depends(get_current_user_optional),
+):
+    document = await run_blocking(_get_authorized_diagram, diagram_id, repo, user_repo, current_user)
+    if not document.classes:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Diagram must contain at least one class to generate documentation.",
+        )
+
+    client_key = current_user.id if current_user else (request.client.host if request.client else "anon")
+    retry_after = ai_limiter.hit(f"docs:{client_key}")
+    if retry_after:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Demasiados pedidos a la IA. Esperá unos segundos y probá de nuevo.",
+            headers={"Retry-After": str(int(retry_after) + 1)},
+        )
+
+    enrichment = ai_enrichment.get_cached(document)
+    if enrichment is not None:
+        status_header = "cache"
+    else:
+        enrichment, status_header = await ai_enrichment.enrich_document(
+            document,
+            senior_colleague_orchestrator._get_provider_chain(),
+            senior_colleague_orchestrator._guarded_call,
+        )
+        if enrichment is not None:
+            ai_enrichment.put_cached(document, enrichment)
+
+    author = (getattr(current_user, "name", None) or "Invitado") if current_user else "Invitado"
+    result = await run_blocking(build_data_dictionary, document, author=author, enrichment=enrichment)
+    safe_name = re.sub(r"[^a-zA-Z0-9_\-]", "_", (document.name or "schema").strip()) or "schema"
+    filename = f"{safe_name}_diccionario_datos_ia.pdf"
+
+    return Response(
+        content=result.pdf,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "X-Docs-AI": status_header,
+        },
     )
 
 

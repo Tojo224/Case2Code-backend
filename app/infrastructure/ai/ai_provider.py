@@ -937,6 +937,7 @@ Do not output markdown codeblocks, explanations outside JSON, or any extra text.
             resp = await client.post(self.endpoint, json=payload, headers=self._headers())
             resp.raise_for_status()
             data = resp.json()
+            logger.info("Gemini usage: %s", data.get("usageMetadata"))
             candidates = data.get("candidates", [])
             if candidates and "content" in candidates[0]:
                 parts = candidates[0]["content"].get("parts", [])
