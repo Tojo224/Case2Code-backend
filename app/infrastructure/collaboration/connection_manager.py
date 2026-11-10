@@ -1,7 +1,7 @@
 import asyncio
 import json
 import logging
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from fastapi import WebSocket
 
 from app.domain.models.user import User, UserPresence
@@ -169,6 +169,10 @@ class ConnectionManager:
         except Exception as e:
             logger.warning(f"Error sending message to client: {e!r}")
             return False
+
+    async def send_to(self, ws: WebSocket, message: Dict[str, Any]) -> bool:
+        """Sends one message to a single socket (bounded by the send timeout)."""
+        return await self._send(ws, json.dumps(message))
 
     async def broadcast_cursor(
         self,

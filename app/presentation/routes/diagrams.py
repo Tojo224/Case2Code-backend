@@ -63,7 +63,25 @@ from app.presentation.schemas.diagram_schemas import (
 
 logger = logging.getLogger(__name__)
 
+from app.core.limits import (
+    ALLOWED_IMAGE_MIME_TYPES,
+    MAX_CHAT_MESSAGE_CHARS,
+    MAX_WS_FRAME_CHARS,
+    MAX_XMI_UPLOAD_BYTES,
+)
+
 router = APIRouter(prefix="/diagrams", tags=["Diagrams"])
+
+
+async def _read_xmi_upload(file: UploadFile) -> bytes:
+    """Reads an uploaded XMI with a hard size cap (never buffers more than the limit + 1 byte)."""
+    content = await file.read(MAX_XMI_UPLOAD_BYTES + 1)
+    if len(content) > MAX_XMI_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"El archivo XMI supera el máximo de {MAX_XMI_UPLOAD_BYTES // 1_000_000} MB.",
+        )
+    return content
 
 
 def get_repository(db: Session = Depends(get_db)) -> SqlAlchemyDiagramRepository:
@@ -121,7 +139,7 @@ async def import_new_diagram_xmi(
         relationships=[],
     )
 
-    content_bytes = await file.read()
+    content_bytes = await _read_xmi_upload(file)
     try:
         xml_str = content_bytes.decode("utf-8")
     except UnicodeDecodeError:
@@ -466,6 +484,11 @@ async def process_assistant_prompt(
 
     image_data = None
     if payload.image_base64:
+        if (payload.image_mime_type or "image/png") not in ALLOWED_IMAGE_MIME_TYPES:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Formato de imagen no soportado. Usá PNG, JPEG, WEBP o GIF.",
+            )
         image_data = {
             "data": payload.image_base64,
             "mime_type": payload.image_mime_type or "image/png",
@@ -575,7 +598,7 @@ async def import_diagram_xmi(
         viewer="Los observadores (viewers) no pueden importar diagramas.",
     )
 
-    content_bytes = await file.read()
+    content_bytes = await _read_xmi_upload(file)
     try:
         xml_str = content_bytes.decode("utf-8")
     except UnicodeDecodeError:
@@ -769,6 +792,10 @@ async def diagram_websocket(
     try:
         while True:
             data = await websocket.receive_text()
+            if len(data) > MAX_WS_FRAME_CHARS:
+                # 1009 = message too big: the client is misbehaving, drop it instead of parsing.
+                await websocket.close(code=1009)
+                break
             try:
                 msg = json.loads(data)
                 msg_type = msg.get("type")
@@ -788,6 +815,17 @@ async def diagram_websocket(
                 elif msg_type == "SEND_CHAT_MESSAGE":
                     content = str(msg.get("content", "")).strip()
                     ai_mode = str(msg.get("ai_mode", "PAIR_PROGRAMMER"))
+                    if len(content) > MAX_CHAT_MESSAGE_CHARS:
+                        # Tell only the sender; nothing is stored, broadcast or sent to the LLM.
+                        await connection_manager.send_to(
+                            websocket,
+                            {
+                                "type": "MESSAGE_REJECTED",
+                                "reason": "too_long",
+                                "max_chars": MAX_CHAT_MESSAGE_CHARS,
+                            },
+                        )
+                        continue
                     if content:
                         # Access can change while the socket is open (collaborator removed,
                         # role downgraded): decide from fresh data on EVERY chat message, so a

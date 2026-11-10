@@ -3,6 +3,7 @@ from pydantic import BaseModel, Field
 
 from app.domain.models.canonical_uml import CanonicalUmlDocument
 from app.domain.models.chat import ChatMessage
+from app.core.limits import MAX_ASSISTANT_PROMPT_CHARS, MAX_BATCH_COMMANDS, MAX_IMAGE_BASE64_CHARS
 from app.domain.models.commands import UmlCommand
 
 
@@ -23,9 +24,11 @@ class CommandExecutionResponse(BaseModel):
 
 
 class AssistantPromptRequest(BaseModel):
-    prompt: Optional[str] = "Replicar este diseño en el diagrama."
-    image_base64: Optional[str] = None
-    image_mime_type: Optional[str] = "image/png"
+    prompt: Optional[str] = Field(
+        default="Replicar este diseño en el diagrama.", max_length=MAX_ASSISTANT_PROMPT_CHARS
+    )
+    image_base64: Optional[str] = Field(default=None, max_length=MAX_IMAGE_BASE64_CHARS)
+    image_mime_type: Optional[str] = Field(default="image/png", max_length=40)
     gemini_api_key: Optional[str] = None
 
 
@@ -47,7 +50,7 @@ class AiConfigUpdateRequest(BaseModel):
 
 
 class BatchCommandsRequest(BaseModel):
-    commands: List[UmlCommand]
+    commands: List[UmlCommand] = Field(..., max_length=MAX_BATCH_COMMANDS)
 
 
 class SkippedCommand(BaseModel):
