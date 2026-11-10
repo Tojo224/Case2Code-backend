@@ -273,6 +273,8 @@ async def apply_planned_commands(
             document_dict=outcome.document.model_dump(mode="json"),
         )
 
+    schedule_ai_cursor(hub, diagram_id, outcome.document, outcome.applied)
+
     if outcome.skipped:
         reply += f"\n\n{_describe_skips(outcome, len(planned))}"
     if snapshot is None and version_service is not None:
@@ -281,6 +283,89 @@ async def apply_planned_commands(
             "así que no vas a tener un punto exacto al cual volver para deshacerlo."
         )
     return reply, outcome.applied
+
+
+# --- the AI's cursor: it visibly "walks" over the classes it just changed ---
+
+CURSOR_STEP_S = 0.9       # time spent over each class
+CURSOR_LINGER_S = 1.6     # how long it stays after the last stop before disappearing
+MAX_CURSOR_STOPS = 6
+CURSOR_OFFSET = (70.0, 34.0)  # lands on the class card, not on its corner
+
+_cursor_tasks: Dict[str, "asyncio.Task[Any]"] = {}
+
+
+def _cursor_stops(document: CanonicalUmlDocument, commands: List[UmlCommand]) -> List[Tuple[float, float]]:
+    """Canvas positions of the classes touched by `commands`, in order, without repeats."""
+    by_id = {c.id: c for c in document.classes}
+    by_name = {c.name.lower(): c for c in document.classes}
+
+    def resolve(ref: Any):
+        if not ref:
+            return None
+        return by_id.get(str(ref)) or by_name.get(str(ref).lower())
+
+    seen: Set[str] = set()
+    stops: List[Tuple[float, float]] = []
+    for cmd in commands:
+        refs = [
+            getattr(cmd, "class_id", None),
+            getattr(cmd, "source_class_id", None),
+            getattr(cmd, "target_class_id", None),
+        ]
+        if getattr(cmd, "command_type", None) is not None and "CREATE_CLASS" in str(cmd.command_type):
+            refs.append(getattr(cmd, "name", None))
+        for ref in refs:
+            cls = resolve(ref)
+            if cls is None or cls.id in seen:
+                continue
+            seen.add(cls.id)
+            stops.append((cls.position.x + CURSOR_OFFSET[0], cls.position.y + CURSOR_OFFSET[1]))
+            if len(stops) >= MAX_CURSOR_STOPS:
+                return stops
+    return stops
+
+
+async def _walk_ai_cursor(hub, diagram_id: str, stops: List[Tuple[float, float]]) -> None:
+    try:
+        for x, y in stops:
+            await hub.broadcast_ai_cursor(diagram_id, AI_USER_ID, AI_NAME, AI_AVATAR_COLOR, x, y)
+            await asyncio.sleep(CURSOR_STEP_S)
+        await asyncio.sleep(CURSOR_LINGER_S)
+    except asyncio.CancelledError:
+        pass  # a newer AI edit took over the cursor
+    except Exception as e:
+        logger.warning("AI cursor animation failed: %s", e)
+    finally:
+        try:
+            await hub.hide_cursor(diagram_id, AI_USER_ID, AI_NAME)
+        except Exception:
+            pass
+
+
+def schedule_ai_cursor(hub, diagram_id: str, document: CanonicalUmlDocument, commands: List[UmlCommand]) -> None:
+    """Fire-and-forget: never delays the reply and never fails the turn."""
+    if not hasattr(hub, "broadcast_ai_cursor") or not hasattr(hub, "hide_cursor"):
+        return
+    try:
+        stops = _cursor_stops(document, commands)
+        if not stops:
+            return
+        previous = _cursor_tasks.pop(diagram_id, None)
+        if previous is not None and not previous.done():
+            previous.cancel()
+        task = asyncio.create_task(_walk_ai_cursor(hub, diagram_id, stops))
+        _cursor_tasks[diagram_id] = task
+        _background_tasks.add(task)
+
+        def _done(t: "asyncio.Task[Any]") -> None:
+            _background_tasks.discard(t)
+            if _cursor_tasks.get(diagram_id) is t:
+                _cursor_tasks.pop(diagram_id, None)
+
+        task.add_done_callback(_done)
+    except Exception as e:
+        logger.warning("Could not schedule the AI cursor: %s", e)
 
 
 # --- scheduling: strong references, error logging, typing indicator ---

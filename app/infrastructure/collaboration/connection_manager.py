@@ -200,6 +200,30 @@ class ConnectionManager:
                 exclude_ws=sender_ws,
             )
 
+    async def broadcast_ai_cursor(
+        self, diagram_id: str, user_id: str, name: str, avatar_color: str, x: float, y: float
+    ) -> None:
+        """A cursor for a participant that has no websocket (the AI): same message as a human's."""
+        await self.broadcast(
+            diagram_id,
+            {
+                "type": "CURSOR_MOVE",
+                "diagram_id": diagram_id,
+                "user_id": user_id,
+                "name": name,
+                "avatar_color": avatar_color,
+                "x": x,
+                "y": y,
+            },
+        )
+
+    async def hide_cursor(self, diagram_id: str, user_id: str, name: str) -> None:
+        """Clients drop a participant's cursor on USER_LEFT (harmless for ids that are not users)."""
+        await self.broadcast(
+            diagram_id,
+            {"type": "USER_LEFT", "diagram_id": diagram_id, "user_id": user_id, "name": name},
+        )
+
     async def broadcast_selection(
         self,
         diagram_id: str,
