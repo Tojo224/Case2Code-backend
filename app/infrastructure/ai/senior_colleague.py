@@ -499,6 +499,21 @@ class SeniorColleagueOrchestrator:
         )
 
     @staticmethod
+    def _mentions_editor_feature(text: str) -> bool:
+        """Names a button/panel/feature of the editor ("¿dónde está el historial?"): the guide
+        must travel, or the model would invent the UI. Cheaper than always sending it."""
+        norm = fold(strip_mention(text))
+        return any(
+            w in norm
+            for w in (
+                "boton", "historial", "version", "checkpoint", "sql", "spring", "flutter", "xmi",
+                "enterprise", "compartir", "invitar", "holograma", "asesor", "pair dev", "lienzo",
+                "tutorial", "exportar", "importar", "descargar", "panel", "barra", "diccionario",
+                "deshacer", "menu",
+            )
+        )
+
+    @staticmethod
     def _is_smalltalk(text: str) -> bool:
         """A bare greeting or acknowledgement ("hola", "gracias", "ok"): no model needed."""
         clean = re.sub(r"[^\w\s]", " ", fold(strip_mention(text)))
@@ -589,7 +604,7 @@ class SeniorColleagueOrchestrator:
             ai_mode=ai_mode,
             versions_context=versions_context,
             # The ~600-token editor guide only travels when the user asks how to use the editor.
-            include_guide=self._is_software_usage_question(prompt),
+            include_guide=self._is_software_usage_question(prompt) or self._mentions_editor_feature(prompt),
         )
         history_block = build_history_block(chat_history)
         speaker_name = sanitize_name(speaker.name)

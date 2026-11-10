@@ -327,20 +327,23 @@ def _cursor_stops(document: CanonicalUmlDocument, commands: List[UmlCommand]) ->
 
 
 async def _walk_ai_cursor(hub, diagram_id: str, stops: List[Tuple[float, float]]) -> None:
+    superseded = False
     try:
         for x, y in stops:
             await hub.broadcast_ai_cursor(diagram_id, AI_USER_ID, AI_NAME, AI_AVATAR_COLOR, x, y)
             await asyncio.sleep(CURSOR_STEP_S)
         await asyncio.sleep(CURSOR_LINGER_S)
     except asyncio.CancelledError:
-        pass  # a newer AI edit took over the cursor
+        # A newer AI edit took over the cursor: it must not be hidden by this older walk.
+        superseded = True
     except Exception as e:
         logger.warning("AI cursor animation failed: %s", e)
     finally:
-        try:
-            await hub.hide_cursor(diagram_id, AI_USER_ID, AI_NAME)
-        except Exception:
-            pass
+        if not superseded:
+            try:
+                await hub.hide_cursor(diagram_id, AI_USER_ID, AI_NAME)
+            except Exception:
+                pass
 
 
 def schedule_ai_cursor(hub, diagram_id: str, document: CanonicalUmlDocument, commands: List[UmlCommand]) -> None:

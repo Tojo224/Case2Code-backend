@@ -77,3 +77,21 @@ async def test_a_hub_without_cursor_support_is_ignored():
 
     schedule_ai_cursor(PlainHub(), "d-cur", _doc(), _cmds({"command_type": "ADD_ATTRIBUTE", "class_id": "c1", "name": "x", "type": "String"}))
     assert "d-cur" not in ai_room_runner._cursor_tasks
+
+
+@pytest.mark.asyncio
+async def test_a_newer_walk_is_not_hidden_by_the_one_it_replaced(monkeypatch):
+    monkeypatch.setattr(ai_room_runner, "CURSOR_STEP_S", 0.2)
+    monkeypatch.setattr(ai_room_runner, "CURSOR_LINGER_S", 0.0)
+    hub = RecordingHub()
+    cmds = _cmds(
+        {"command_type": "ADD_ATTRIBUTE", "class_id": "c1", "name": "email", "type": "String"},
+        {"command_type": "ADD_ATTRIBUTE", "class_id": "c3", "name": "precio", "type": "Double"},
+    )
+    schedule_ai_cursor(hub, "d-cur", _doc(), cmds)
+    await asyncio.sleep(0.05)  # first walk is mid-way
+    schedule_ai_cursor(hub, "d-cur", _doc(), cmds)  # a newer AI edit takes over
+    await asyncio.sleep(0.8)
+    hides = [i for i, e in enumerate(hub.events) if e[0] == "hide"]
+    assert len(hides) == 1  # only the newest walk hides the cursor, once it is done
+    assert hides[0] == len(hub.events) - 1

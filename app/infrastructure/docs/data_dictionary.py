@@ -284,13 +284,15 @@ def _build_pdf(document, tables, rules, author, today, scale,
     st_head = ParagraphStyle("h", fontName="Times-Bold", fontSize=fs(10), leading=fs(12),
                              alignment=TA_CENTER, textColor=colors.white)
     st_h1 = ParagraphStyle("h1", fontName="Times-Bold", fontSize=fs(18), leading=fs(22),
-                           textColor=HEAD_COLOR, spaceAfter=fs(6))
+                           textColor=HEAD_COLOR, spaceAfter=fs(6), keepWithNext=1)
     st_h2 = ParagraphStyle("h2", fontName="Times-Bold", fontSize=fs(14), leading=fs(17),
-                           textColor=HEAD_COLOR, spaceBefore=fs(8), spaceAfter=fs(3))
+                           textColor=HEAD_COLOR, spaceBefore=fs(8), spaceAfter=fs(3), keepWithNext=1)
     st_h3 = ParagraphStyle("h3", fontName="Times-Bold", fontSize=fs(11), leading=fs(14),
-                           textColor=HEAD_COLOR, spaceBefore=fs(4), spaceAfter=fs(2))
+                           textColor=HEAD_COLOR, spaceBefore=fs(4), spaceAfter=fs(2), keepWithNext=1)
     st_body = ParagraphStyle("b", fontName="Times-Roman", fontSize=fs(10.5), leading=fs(13))
     st_ex = ParagraphStyle("e", parent=st_body, leftIndent=18)
+    # A table's one-line description stays with its table (no orphaned headings at a page bottom).
+    st_desc = ParagraphStyle("d", parent=st_body, keepWithNext=1)
     st_toc = [ParagraphStyle(f"toc{i}", fontName="Times-Roman", fontSize=11, leading=15,
                              leftIndent=20 * i, rightIndent=30) for i in range(2)]
 
@@ -351,7 +353,7 @@ def _build_pdf(document, tables, rules, author, today, scale,
             desc = f"almacena los registros de {tname}."
         desc = ai_tables.get(tname) or desc
         t_ai_cols = ai_cols.get(tname, {})
-        story.append(Paragraph(_esc(desc), st_body))
+        story.append(Paragraph(_esc(desc), st_desc))
         story.append(Spacer(1, 3 * scale))
         fks = {fk.column_name: fk.target_table for fk in t.foreign_keys}
         data = [[Paragraph(h, st_head) for h in ("número", "atributo", "tipo dato", "pk/fk", "descripción", "ejemplos")]]

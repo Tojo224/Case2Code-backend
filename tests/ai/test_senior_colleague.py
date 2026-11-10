@@ -282,3 +282,21 @@ async def test_fallback_examples_do_not_push_the_at_ai_mention_when_alone():
     orch = SeniorColleagueOrchestrator(provider=FakeProvider(chat_reply=None))
     res = await _ask(orch, _doc(), "contame algo raro sobre cosas", mode="ADVISORY")
     assert "`@ai" not in res.reply_text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "prompt,expects_guide",
+    [
+        ("¿dónde está el botón del historial?", True),
+        ("¿se puede exportar el diccionario?", True),
+        ("revisá la normalización de mi modelo", False),
+    ],
+)
+async def test_editor_guide_only_travels_when_the_question_is_about_the_editor(prompt, expects_guide):
+    provider = FakeProvider(chat_reply="listo")
+    orch = SeniorColleagueOrchestrator(provider=provider)
+    await _ask(orch, _doc(), prompt, mode="ADVISORY")
+    assert provider.chat_calls, "the model should have been called"
+    has_guide = "GUÍA DE FUNCIONALIDADES REALES DEL EDITOR CASE2CODE" in provider.chat_calls[0]["system"]
+    assert has_guide is expects_guide
