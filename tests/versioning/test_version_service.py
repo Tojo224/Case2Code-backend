@@ -3,8 +3,14 @@ from datetime import datetime, timedelta, timezone
 import uuid
 
 import pytest
+from sqlalchemy import event
 
-from app.application.services.version_service import MAX_AUTO_VERSIONS, DiagramVersionService
+from app.application.services.version_service import (
+    MAX_AUTO_VERSIONS,
+    MAX_PRE_AI_VERSIONS,
+    MAX_PRE_RESTORE_VERSIONS,
+    DiagramVersionService,
+)
 from app.domain.models.canonical_uml import CanonicalUmlDocument, UmlAttribute, UmlClass
 from app.domain.models.versioning import (
     VersionAuthorType,
@@ -190,3 +196,81 @@ def test_restore_with_matching_expected_version(service, doc):
 def test_restore_not_found(service, doc):
     with pytest.raises(VersionNotFoundError):
         service.restore(doc.id, 7, **AUTHOR)
+
+
+@pytest.mark.parametrize(
+    "kind,limit",
+    [(VersionKind.PRE_AI, MAX_PRE_AI_VERSIONS), (VersionKind.PRE_RESTORE, MAX_PRE_RESTORE_VERSIONS)],
+)
+def test_pre_ai_and_pre_restore_are_pruned_to_newest(service, doc, kind, limit):
+    service.create_snapshot(doc, **AUTHOR, label="Hito")
+    for _ in range(limit + 4):
+        service.create_snapshot(doc, **AUTHOR, kind=kind)
+    versions = service.list_versions(doc.id, limit=200)
+    kept = [v for v in versions if v.kind == kind]
+    assert len(kept) == limit
+    assert kept[0].number == limit + 5  # newest survives, oldest were dropped
+    assert any(v.kind == VersionKind.CHECKPOINT and v.label == "Hito" for v in versions)
+
+
+def test_pruning_one_kind_does_not_touch_the_others(service, doc):
+    for _ in range(MAX_PRE_AI_VERSIONS + 3):
+        service.create_snapshot(doc, **AUTHOR, kind=VersionKind.PRE_RESTORE)
+    for _ in range(MAX_PRE_AI_VERSIONS + 3):
+        service.create_snapshot(doc, **AUTHOR, kind=VersionKind.PRE_AI)
+    kinds = [v.kind for v in service.list_versions(doc.id, limit=200)]
+    assert kinds.count(VersionKind.PRE_RESTORE) == MAX_PRE_RESTORE_VERSIONS
+    assert kinds.count(VersionKind.PRE_AI) == MAX_PRE_AI_VERSIONS
+
+
+def test_checkpoints_are_never_pruned(service, doc):
+    for _ in range(MAX_AUTO_VERSIONS + 10):
+        service.create_snapshot(doc, **AUTHOR)
+    assert len(service.list_versions(doc.id, limit=200)) == MAX_AUTO_VERSIONS + 10
+
+
+def _capture_sql(db_session):
+    statements = []
+
+    def before(conn, cursor, statement, *args):
+        statements.append(statement)
+
+    bind = db_session.get_bind()
+    event.listen(bind, "before_cursor_execute", before)
+    return statements, lambda: event.remove(bind, "before_cursor_execute", before)
+
+
+def test_throttled_auto_snapshot_does_not_select_the_snapshot_blob(service, doc, db_session):
+    service.create_snapshot(doc, **AUTHOR)
+    db_session.expire_all()
+    statements, stop = _capture_sql(db_session)
+    try:
+        assert service.maybe_auto_snapshot(doc, **AUTHOR, min_interval_seconds=600) is None
+    finally:
+        stop()
+    selects = [s for s in statements if s.lstrip().upper().startswith("SELECT")]
+    assert selects, "throttle path should still query metadata"
+    assert not any("diagram_versions.snapshot" in s for s in selects)
+
+
+def test_snapshot_blob_is_loaded_once_the_age_check_passes(service, doc, db_session):
+    service.create_snapshot(doc, **AUTHOR)
+    _backdate(db_session, doc.id, 700)
+    db_session.expire_all()
+    statements, stop = _capture_sql(db_session)
+    try:
+        assert service.maybe_auto_snapshot(doc, **AUTHOR, min_interval_seconds=600) is None  # unchanged
+    finally:
+        stop()
+    assert any("diagram_versions.snapshot" in s for s in statements)
+
+
+def test_list_versions_does_not_select_the_snapshot_blob(service, doc, db_session):
+    service.create_snapshot(doc, **AUTHOR)
+    db_session.expire_all()
+    statements, stop = _capture_sql(db_session)
+    try:
+        assert len(service.list_versions(doc.id)) == 1
+    finally:
+        stop()
+    assert not any("diagram_versions.snapshot" in s for s in statements)

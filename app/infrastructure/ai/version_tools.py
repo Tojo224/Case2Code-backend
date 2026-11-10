@@ -11,6 +11,7 @@ room runner) never depend on the real implementation.
 
 import logging
 import re
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional
@@ -30,6 +31,8 @@ logger = logging.getLogger(__name__)
 
 AI_AUTHOR_ID = "ai-senior"
 AI_AUTHOR_NAME = "Senior AI"
+# Each checkpoint is a full JSON copy of the diagram: don't let chat spam it.
+AI_CHECKPOINT_COOLDOWN_S = 60
 
 VersionServiceFactory = Callable[[Session], DiagramVersionService]
 
@@ -197,10 +200,39 @@ def answer_history(service: DiagramVersionService, diagram_id: str, max_changes:
     return "\n".join(lines)
 
 
+def _checkpoint_cooldown_remaining(service: DiagramVersionService, diagram_id: str) -> int:
+    """Seconds left before the AI may save another checkpoint (0 = allowed).
+    A failing lookup never blocks the checkpoint."""
+    try:
+        versions = service.list_versions(diagram_id, limit=50)
+    except Exception as e:
+        logger.debug("Could not check AI checkpoint cooldown: %s", e)
+        return 0
+    last = next(
+        (
+            v
+            for v in versions
+            if v.kind == VersionKind.CHECKPOINT and v.author_type == VersionAuthorType.AI
+        ),
+        None,
+    )
+    if last is None:
+        return 0
+    created = last.created_at if last.created_at.tzinfo else last.created_at.replace(tzinfo=timezone.utc)
+    elapsed = (datetime.now(timezone.utc) - created).total_seconds()
+    return max(0, int(AI_CHECKPOINT_COOLDOWN_S - elapsed) + 1) if elapsed < AI_CHECKPOINT_COOLDOWN_S else 0
+
+
 def create_ai_checkpoint(
     service: DiagramVersionService, document: CanonicalUmlDocument, requested_by: str
 ) -> VersionToolResult:
     """Direct, safe action: save a CHECKPOINT authored by the AI."""
+    wait = _checkpoint_cooldown_remaining(service, document.id)
+    if wait > 0:
+        return VersionToolResult(
+            "Ya guardé un checkpoint hace instantes. "
+            f"Esperá unos {wait} segundos antes de pedirme otro."
+        )
     try:
         version = service.create_snapshot(
             document,

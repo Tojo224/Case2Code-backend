@@ -22,7 +22,7 @@ from typing import List, Optional
 
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer
 
 from app.domain.models.canonical_uml import CanonicalUmlDocument
 from app.domain.models.versioning import (
@@ -39,6 +39,14 @@ from app.infrastructure.persistence.diagram_repository import SqlAlchemyDiagramR
 from app.infrastructure.persistence.version_models import DiagramVersionModel
 
 MAX_AUTO_VERSIONS = 50
+MAX_PRE_AI_VERSIONS = 30
+MAX_PRE_RESTORE_VERSIONS = 30
+# Newest rows kept per kind. CHECKPOINT is deliberately absent: never pruned.
+_RETENTION = {
+    VersionKind.AUTO: MAX_AUTO_VERSIONS,
+    VersionKind.PRE_AI: MAX_PRE_AI_VERSIONS,
+    VersionKind.PRE_RESTORE: MAX_PRE_RESTORE_VERSIONS,
+}
 _NUMBER_RACE_RETRIES = 1
 _VOLATILE_FIELDS = ("version", "updated_at")
 
@@ -146,7 +154,9 @@ class DiagramVersionService:
                 if attempt >= _NUMBER_RACE_RETRIES:
                     raise
                 continue
-            return _to_version(row)
+            version = _to_version(row)
+            self._prune(document.id, kind)
+            return version
         raise RuntimeError("unreachable")  # pragma: no cover
 
     def maybe_auto_snapshot(
@@ -160,41 +170,53 @@ class DiagramVersionService:
     ) -> Optional[DiagramVersion]:
         """Create an AUTO snapshot only if the last snapshot is older than
         min_interval_seconds AND the document changed since it. Else return None."""
-        last = self._latest(document.id)
+        # Throttle path reads metadata only: the snapshot blob can be large and
+        # this runs on every /commands.
+        last = (
+            self.db.query(DiagramVersionModel.number, DiagramVersionModel.created_at)
+            .filter(DiagramVersionModel.diagram_id == document.id)
+            .order_by(DiagramVersionModel.number.desc())
+            .first()
+        )
         if last is not None:
             age = datetime.now(timezone.utc) - _as_utc(last.created_at)
             if age < timedelta(seconds=min_interval_seconds):
                 return None
-            if _content(last.snapshot) == _content(document.model_dump(mode="json")):
+            previous = self._row(document.id, last.number)
+            if _content(previous.snapshot) == _content(document.model_dump(mode="json")):
                 return None
-        created = self.create_snapshot(
+        return self.create_snapshot(
             document,
             author_id=author_id,
             author_name=author_name,
             author_type=author_type,
             kind=VersionKind.AUTO,
         )
-        self._prune_auto(document.id)
-        return created
 
-    def _prune_auto(self, diagram_id: str) -> None:
-        stale = (
-            self._query(diagram_id)
-            .filter(DiagramVersionModel.kind == VersionKind.AUTO.value)
-            .order_by(DiagramVersionModel.number.desc())
-            .offset(MAX_AUTO_VERSIONS)
-            .all()
-        )
-        if not stale:
+    def _prune(self, diagram_id: str, kind: VersionKind) -> None:
+        keep = _RETENTION.get(kind)
+        if keep is None:
             return
-        for row in stale:
-            self.db.delete(row)
+        stale_ids = [
+            row.id
+            for row in self.db.query(DiagramVersionModel.id)
+            .filter(DiagramVersionModel.diagram_id == diagram_id, DiagramVersionModel.kind == kind.value)
+            .order_by(DiagramVersionModel.number.desc())
+            .offset(keep)
+            .all()
+        ]
+        if not stale_ids:
+            return
+        self.db.query(DiagramVersionModel).filter(DiagramVersionModel.id.in_(stale_ids)).delete(
+            synchronize_session=False
+        )
         self.db.commit()
 
     def list_versions(self, diagram_id: str, limit: int = 50) -> List[DiagramVersion]:
         """Newest first."""
         rows = (
             self._query(diagram_id)
+            .options(defer(DiagramVersionModel.snapshot))  # listings never need the blob
             .order_by(DiagramVersionModel.number.desc())
             .limit(limit)
             .all()
