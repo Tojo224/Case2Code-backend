@@ -25,9 +25,12 @@ from app.domain.models.versioning import (
     VersionAuthorType,
     VersionKind,
 )
+from app.infrastructure.ai.ai_context import sanitize_name, sanitize_text
 from app.infrastructure.ai.ai_policy import fold, strip_mention
 
 logger = logging.getLogger(__name__)
+
+LABEL_MAX_CHARS = 60
 
 AI_AUTHOR_ID = "ai-senior"
 AI_AUTHOR_NAME = "Senior AI"
@@ -154,8 +157,11 @@ def _describe(version: DiagramVersion) -> str:
         VersionKind.PRE_AI: "antes de un cambio de la IA",
         VersionKind.PRE_RESTORE: "antes de una restauración",
     }.get(version.kind, str(version.kind))
-    label = f" «{version.label}»" if version.label else ""
-    return f"v{version.number}{label} ({kind}, {version.author_name}, {version.class_count} clases)"
+    # Labels and author names are typed by users and end up in the LLM context: sanitize them.
+    clean_label = sanitize_text(str(version.label or "").replace("«", " ").replace("»", " "), LABEL_MAX_CHARS)
+    label = f" «{clean_label}»" if clean_label else ""
+    author = sanitize_name(version.author_name)
+    return f"v{version.number}{label} ({kind}, {author}, {version.class_count} clases)"
 
 
 def summarize_recent_versions(
