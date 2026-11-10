@@ -78,16 +78,51 @@ _CHECKPOINT = re.compile(
     r"\b(?:checkpoint|snapshot|punto\s+de\s+restauracion|punto\s+de\s+control|copia\s+de\s+seguridad)\b"
     r"|\bguard\w+\b.*\bversion\b"
 )
+_CHECKPOINT_BARE = re.compile(
+    r"^\W*(?:un\s+|el\s+)?(?:checkpoint|snapshot|punto\s+de\s+restauracion)\W*$"
+)
+# "historial" alone is version history, but "historial clinico" / "historial de
+# reservas" are domain nouns.
 _HISTORY = re.compile(
-    r"\bque\s+cambio\b|\bque\s+cambios\b|\bhistorial\b|\bversiones\b|\bque\s+se\s+modifico\b"
+    r"\bque\s+cambio\b|\bque\s+cambios\b"
+    r"|\bhistorial\b(?!\s+(?:clinic\w*|medic\w*|academic\w*|de\s+(?!versiones\b|cambios\b)\w+))"
+    r"|\bversiones\b|\bque\s+se\s+modifico\b"
     r"|\bultimos\s+cambios\b|\bcambios\s+recientes\b|\bque\s+hicieron\b|\bque\s+paso\b"
 )
+
+# Words of a modelling request: the message is about the DIAGRAM CONTENT, not its history.
+_MODEL_ENTITY = re.compile(r"\b(?:atributos?|clases?|tablas?|columnas?|campos?|entidad(?:es)?|relacion(?:es)?)\b")
+_CREATION_VERB = re.compile(
+    r"\b(?:crea\w*|agreg\w+|anad\w+|add|create|new|nueva|nuevo|hac\w+|haz\w*|arma\w*|disena\w*"
+    r"|genera\w*|modela\w*|constru\w+|elimin\w+|borra\w*|quita\w*)\b"
+)
+# Version-specific anchors that still win when the message also sounds like modelling.
+_STRONG_ANCHOR = re.compile(
+    r"\b(?:checkpoint|snapshot|punto\s+de\s+(?:restauracion|control)|copia\s+de\s+seguridad)\b"
+    r"|\bversion\s*(?:n\s*[°o.]?\s*)?#?\s*\d+|\bv\s*\d+\b|#\d+"
+    r"|\bversion\s+anterior\b|\bultima\s+version\b"
+    r"|\bversiones\s+(?:del?|de\s+(?:la|el|este|esta))\s+(?:diagrama|proyecto|modelo)\b"
+    r"|\bhistorial\s+de\s+(?:versiones|cambios)\b"
+    r"|\blo\s+ultimo\s+que\s+(?:hiciste|hizo|hicieron|cambiaste)\b|\bcambios?\s+de\s+la\s+ia\b"
+)
+
+
+def _is_modelling_request(text: str) -> bool:
+    return bool(_MODEL_ENTITY.search(text) or _CREATION_VERB.search(text))
 
 
 def detect_version_intent(prompt: str) -> Optional[VersionIntent]:
     """Deterministic intent detection on the (accent-folded) prompt. RESTORE wins
-    over CHECKPOINT, which wins over HISTORY."""
+    over CHECKPOINT, which wins over HISTORY.
+
+    A message that creates/edits model content or names model entities ("crea la
+    clase Historial", "guarda la version del libro como atributo") is only a
+    version request when it carries a version-specific anchor (checkpoint,
+    "version 3", "historial de versiones", ...)."""
     text = fold(strip_mention(prompt))
+
+    if _is_modelling_request(text) and not _STRONG_ANCHOR.search(text):
+        return None
 
     if _RESTORE_VERB.search(text):
         match = _VERSION_NUMBER.search(text)
@@ -101,7 +136,7 @@ def detect_version_intent(prompt: str) -> Optional[VersionIntent]:
         if re.search(r"\bdesh[ae]c\w*\b", text):
             return VersionIntent(VersionIntentKind.RESTORE, RestoreTarget.LAST_AI)
 
-    if _CHECKPOINT.search(text):
+    if _CHECKPOINT.search(text) or _CHECKPOINT_BARE.search(text):
         return VersionIntent(VersionIntentKind.CHECKPOINT)
 
     if _HISTORY.search(text):

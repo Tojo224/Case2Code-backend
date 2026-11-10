@@ -77,3 +77,45 @@ def test_restore_unknown_version_gives_no_operation():
 
 def test_pre_ai_snapshot_failure_returns_none():
     assert vt.create_pre_ai_snapshot(FakeVersionService(fail_snapshot=True), DOC, "x") is None
+
+
+K = vt.VersionIntentKind
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "crea la clase Historial",
+        "hacé un hotel con historial de reservas",
+        "agrega la tabla historial clinico",
+        "guarda la version del libro como atributo",
+        "@ai creá la clase Version con numero",
+        "agregá el campo historial a Paciente",
+        "mostrame el historial clinico del paciente",
+        "armá la base de datos de una biblioteca con historial de prestamos",
+    ],
+)
+def test_domain_prompts_are_not_hijacked_by_version_intent(text):
+    assert vt.detect_version_intent(text) is None
+
+
+@pytest.mark.parametrize(
+    "text,kind",
+    [
+        ("guardá una versión", K.CHECKPOINT),
+        ("guardá un checkpoint", K.CHECKPOINT),
+        ("hacé un checkpoint", K.CHECKPOINT),
+        ("punto de restauración", K.CHECKPOINT),
+        ("@ai crea un snapshot de la clase Cliente", K.CHECKPOINT),
+        ("qué cambió en el diagrama", K.HISTORY),
+        ("historial de versiones", K.HISTORY),
+        ("mostrame las versiones", K.HISTORY),
+        ("mostrame el historial de cambios del diagrama", K.HISTORY),
+        ("volvé a la versión 3", K.RESTORE),
+        ("volvé a la versión 3 de la tabla Cliente", K.RESTORE),
+        ("deshacé lo último que hizo la IA", K.RESTORE),
+    ],
+)
+def test_real_version_requests_still_work(text, kind):
+    intent = vt.detect_version_intent(text)
+    assert intent is not None and intent.kind == kind
