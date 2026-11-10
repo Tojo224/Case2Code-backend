@@ -11,6 +11,7 @@ from app.domain.models.chat import ChatMessage
 from app.domain.models.commands import UmlCommand
 from app.domain.models.user import User, UserPresence
 from app.application.services.version_service import DiagramVersionService
+from app.infrastructure.collaboration.blocking import run_blocking
 from app.infrastructure.ai import version_tools
 from app.infrastructure.ai.ai_context import (
     build_diagram_context,
@@ -184,6 +185,13 @@ class SeniorColleagueOrchestrator:
 
     # --- memory helpers: a memory failure must never kill the turn ---
 
+    @classmethod
+    async def _memory_call_async(cls, memory, method: str, *args, **kwargs):
+        """Same as _memory_call but the DB work runs off the event loop."""
+        if memory is None:
+            return None
+        return await run_blocking(cls._memory_call, memory, method, *args, **kwargs)
+
     @staticmethod
     def _memory_call(memory: Optional[SqlAlchemyAiMemoryRepository], method: str, *args, **kwargs):
         if memory is None:
@@ -274,13 +282,15 @@ class SeniorColleagueOrchestrator:
         if version_service is not None:
             intent = version_tools.detect_version_intent(norm_prompt)
             if intent is not None:
-                return self._handle_version_intent(intent, speaker, document, can_edit, version_service)
+                return await run_blocking(
+                    self._handle_version_intent, intent, speaker, document, can_edit, version_service
+                )
 
         # 2. Memory: topic from the CURRENT prompt only; pending proposal with TTL
-        mem = self._memory_call(memory, "get", diagram_id)
+        mem = await self._memory_call_async(memory, "get", diagram_id)
         detected_topic = detect_topic(norm_prompt)
         if detected_topic:
-            mem = self._memory_call(memory, "save_topic", diagram_id, detected_topic, norm_prompt) or mem
+            mem = await self._memory_call_async(memory, "save_topic", diagram_id, detected_topic, norm_prompt) or mem
         active_topic = detected_topic or (mem.last_topic if mem else None)
 
         wants_confirm = is_confirmation(norm_prompt)
@@ -298,7 +308,7 @@ class SeniorColleagueOrchestrator:
             base_version = mem.pending_base_version if mem else None
             if base_version is not None and base_version != document.version:
                 # The diagram changed after the proposal was shown: never replay it blindly.
-                self._memory_call(memory, "clear_pending", diagram_id)
+                await self._memory_call_async(memory, "clear_pending", diagram_id)
                 return ColleagueResult(
                     f"@{speaker.name}, el diagrama cambió desde que te mostré esa propuesta, así que no la apliqué "
                     "para no pisar cambios. Pedime de nuevo lo que querías armar y te la preparo sobre el estado actual.",
@@ -324,7 +334,7 @@ class SeniorColleagueOrchestrator:
                     engine=rule_engine,
                     consumed_pending=True,
                 )
-            self._memory_call(memory, "clear_pending", diagram_id)
+            await self._memory_call_async(memory, "clear_pending", diagram_id)
             return ColleagueResult(
                 f"@{speaker.name}, la propuesta pendiente ya no es válida. Pedime de nuevo lo que querías armar.",
                 addressed_to,
@@ -353,7 +363,7 @@ class SeniorColleagueOrchestrator:
             )
             self.last_used_engine = engine
             if executed_commands:
-                self._memory_call(memory, "clear_pending", diagram_id)
+                await self._memory_call_async(memory, "clear_pending", diagram_id)
             prefix = f"@{speaker.name}, " if not interpreter_reply.startswith(f"@{speaker.name}") else ""
             return ColleagueResult(
                 f"{prefix}{interpreter_reply}",
@@ -365,7 +375,7 @@ class SeniorColleagueOrchestrator:
 
         # 6. Advice (+ non-destructive hologram when there is something concrete to show)
         versions_context = (
-            version_tools.summarize_recent_versions(version_service, diagram_id)
+            await run_blocking(version_tools.summarize_recent_versions, version_service, diagram_id)
             if version_service is not None
             else ""
         )
@@ -396,7 +406,7 @@ class SeniorColleagueOrchestrator:
                 if sim_commands:
                     suggested = sim_commands
                     if can_edit:
-                        self._memory_call(
+                        await self._memory_call_async(
                             memory,
                             "save_pending",
                             diagram_id,

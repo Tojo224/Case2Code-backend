@@ -17,12 +17,11 @@ Concurrency design
 import asyncio
 import logging
 import uuid
-from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from sqlalchemy.orm import Session
 
-from app.application.command_bus import command_bus
+from app.application.replay import ReplayOutcome, replay_commands  # noqa: F401  (re-exported)
 from app.domain.models.canonical_uml import CanonicalUmlDocument
 from app.domain.models.chat import ChatMessage, SenderType
 from app.domain.models.commands import UmlCommand
@@ -33,6 +32,7 @@ from app.infrastructure.ai.senior_colleague import (
     senior_colleague_orchestrator,
 )
 from app.infrastructure.collaboration.connection_manager import connection_manager
+from app.infrastructure.collaboration.blocking import run_blocking
 from app.infrastructure.collaboration.room_locks import get_room_ai_lock, get_room_lock
 from app.infrastructure.persistence.ai_memory_repository import SqlAlchemyAiMemoryRepository
 from app.infrastructure.persistence.chat_repository import SqlAlchemyChatRepository
@@ -44,35 +44,6 @@ AI_USER_ID = "ai-senior"
 AI_NAME = "Senior AI"
 AI_AVATAR_COLOR = "#8B5CF6"
 MAX_SKIP_REASONS_SHOWN = 3
-
-
-@dataclass
-class ReplayOutcome:
-    document: CanonicalUmlDocument
-    applied: List[UmlCommand] = field(default_factory=list)
-    skipped: List[Tuple[UmlCommand, str]] = field(default_factory=list)
-
-
-def replay_commands(document: CanonicalUmlDocument, commands: List[UmlCommand]) -> ReplayOutcome:
-    """Replays planned commands on `document` (which is never mutated).
-
-    Each command is tried on a private copy; a command that fails (validation
-    error, missing class, ...) is skipped and reported while the rest continue.
-    The command handlers bump the document version themselves, so nothing extra
-    is added here.
-    """
-    current = document.model_copy(deep=True)
-    outcome = ReplayOutcome(document=current)
-    for cmd in commands:
-        trial = current.model_copy(deep=True)
-        try:
-            current = command_bus.dispatch(trial, cmd)
-            outcome.applied.append(cmd)
-        except Exception as e:  # UmlValidationError, ValueError, KeyError, handler bugs
-            logger.warning("Skipping AI command %s: %s", getattr(cmd, "command_type", cmd), e)
-            outcome.skipped.append((cmd, str(e)))
-    outcome.document = current
-    return outcome
 
 
 def _describe_skips(outcome: ReplayOutcome, total: int) -> str:
@@ -155,13 +126,13 @@ async def _post_failure_reply(*, diagram_id: str, speaker: User, hub, session: S
     )
     try:
         try:
-            SqlAlchemyChatRepository(session).add_message(ai_msg)
+            await run_blocking(SqlAlchemyChatRepository(session).add_message, ai_msg)
         except Exception:
             # The failed session may be unusable: retry once on a fresh one.
             logger.warning("Could not persist AI failure reply on the turn session", exc_info=True)
             fresh = make_session()
             try:
-                SqlAlchemyChatRepository(fresh).add_message(ai_msg)
+                await run_blocking(SqlAlchemyChatRepository(fresh).add_message, ai_msg)
             finally:
                 fresh.close()
         await hub.broadcast_chat_message(diagram_id, ai_msg.model_dump(mode="json"))
@@ -189,11 +160,17 @@ async def _turn_body(
     memory = SqlAlchemyAiMemoryRepository(session)
     version_service = make_versions(session)
 
-    document = diag_repo.get_by_id(diagram_id)
+    def load_context():
+        doc = diag_repo.get_by_id(diagram_id)
+        if doc is None:
+            return None, []
+        msgs = chat_repo.list_messages(diagram_id, limit=12)
+        return doc, msgs
+
+    # One contiguous DB section off the event loop (the session is not used elsewhere meanwhile).
+    document, history = await run_blocking(load_context)
     if document is None:
         return None
-
-    history = chat_repo.list_messages(diagram_id, limit=12)
     if history and history[-1].sender_id == speaker.id and history[-1].content.strip() == content.strip():
         history = history[:-1]  # the message being answered is passed as the prompt itself
 
@@ -227,11 +204,14 @@ async def _turn_body(
 
     if result.consumed_pending and applied:
         # Only a successful apply consumes the stored proposal; a failed one keeps it.
-        try:
-            memory.clear_pending(diagram_id)
-        except Exception:
-            logger.warning("Could not clear the applied pending proposal", exc_info=True)
-            session.rollback()
+        def clear_pending():
+            try:
+                memory.clear_pending(diagram_id)
+            except Exception:
+                logger.warning("Could not clear the applied pending proposal", exc_info=True)
+                session.rollback()
+
+        await run_blocking(clear_pending)
 
     ai_msg = ChatMessage(
         id=f"msg-{uuid.uuid4().hex[:8]}",
@@ -247,7 +227,7 @@ async def _turn_body(
         suggested_commands=[c.model_dump(mode="json") for c in result.suggested_commands] or None,
         suggested_operations=list(result.suggested_operations) or None,
     )
-    chat_repo.add_message(ai_msg)
+    await run_blocking(chat_repo.add_message, ai_msg)
     await hub.broadcast_chat_message(diagram_id, ai_msg.model_dump(mode="json"))
     return ai_msg
 
@@ -268,18 +248,26 @@ async def apply_planned_commands(
 
     Returns (reply_with_notes, applied_commands). Shared by the websocket turn and
     the REST assistant endpoint."""
-    async with get_room_lock(diagram_id):
+    def reload_replay_save():
         session.expire_all()  # never trust the identity map: humans saved in the meantime
         fresh = diag_repo.get_by_id(diagram_id)
         if fresh is None:
-            return f"@{speaker_name}, el diagrama ya no existe, no apliqué nada.", []
-
+            return None, None, None
         outcome = replay_commands(fresh, planned)
         if not outcome.applied:
-            return f"@{speaker_name}, {_describe_skips(outcome, len(planned))}", []
-
+            return fresh, outcome, None
         snapshot = version_tools.create_pre_ai_snapshot(version_service, fresh, prompt)
         diag_repo.save(outcome.document)
+        return fresh, outcome, snapshot
+
+    async with get_room_lock(diagram_id):
+        # The whole reload -> replay -> snapshot -> save section is ONE blocking call, so the
+        # event loop keeps serving every room's websockets while the DB works.
+        fresh, outcome, snapshot = await run_blocking(reload_replay_save)
+        if fresh is None:
+            return f"@{speaker_name}, el diagrama ya no existe, no apliqué nada.", []
+        if not outcome.applied:
+            return f"@{speaker_name}, {_describe_skips(outcome, len(planned))}", []
         await hub.broadcast_document_update(
             diagram_id=diagram_id,
             document_dict=outcome.document.model_dump(mode="json"),
