@@ -1,7 +1,9 @@
-from typing import Optional
+from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 from app.domain.models.canonical_uml import CanonicalUmlDocument
+from app.domain.models.chat import ChatMessage
+from app.core.limits import MAX_ASSISTANT_PROMPT_CHARS, MAX_BATCH_COMMANDS, MAX_IMAGE_BASE64_CHARS
 from app.domain.models.commands import UmlCommand
 
 
@@ -22,9 +24,11 @@ class CommandExecutionResponse(BaseModel):
 
 
 class AssistantPromptRequest(BaseModel):
-    prompt: Optional[str] = "Replicar este diseño en el diagrama."
-    image_base64: Optional[str] = None
-    image_mime_type: Optional[str] = "image/png"
+    prompt: Optional[str] = Field(
+        default="Replicar este diseño en el diagrama.", max_length=MAX_ASSISTANT_PROMPT_CHARS
+    )
+    image_base64: Optional[str] = Field(default=None, max_length=MAX_IMAGE_BASE64_CHARS)
+    image_mime_type: Optional[str] = Field(default="image/png", max_length=40)
     gemini_api_key: Optional[str] = None
 
 
@@ -35,3 +39,42 @@ class AssistantPromptResponse(BaseModel):
     document: CanonicalUmlDocument
     error: Optional[str] = None
 
+
+
+class AiConfigUpdateRequest(BaseModel):
+    """Runtime LLM settings. Semantic validation (mode, URL host) is done by the route."""
+
+    provider_mode: Optional[str] = Field(default=None, max_length=16)
+    local_base_url: Optional[str] = Field(default=None, max_length=300)
+    local_model: Optional[str] = Field(default=None, max_length=120)
+
+
+class BatchCommandsRequest(BaseModel):
+    commands: List[UmlCommand] = Field(..., max_length=MAX_BATCH_COMMANDS)
+
+
+class SkippedCommand(BaseModel):
+    command: Any
+    reason: str
+
+
+class BatchCommandsResponse(BaseModel):
+    document: CanonicalUmlDocument
+    applied: List[UmlCommand]
+    skipped: List[SkippedCommand]
+
+
+class ResolveProposalRequest(BaseModel):
+    """Plain strings on purpose: bad input must answer 400, not FastAPI's 422."""
+
+    target: str
+    index: Optional[int] = None
+    action: str
+    expected_document_version: Optional[int] = None
+
+
+class ResolveProposalResponse(BaseModel):
+    message: ChatMessage
+    document: Optional[CanonicalUmlDocument] = None
+    applied_count: Optional[int] = None
+    skipped: Optional[List[Dict[str, Any]]] = None

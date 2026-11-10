@@ -81,3 +81,13 @@ def sample_document():
         relationships=[],
     )
 
+
+
+@pytest.fixture(autouse=True)
+def reset_rate_limiters():
+    """Rate limiters are process-wide: isolate every test from the previous one."""
+    from app.core.rate_limit import ai_limiter, chat_limiter
+
+    chat_limiter.reset()
+    ai_limiter.reset()
+    yield
